@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+ratio=/data/params/FixedSteerRatio
+tmp=/data/params/.FixedSteerRatio.tmp
+awk 'BEGIN { value=15.00 } $1 ~ /^-?[0-9]+([.][0-9]+)?$/ { value=$1 } END { printf "%.2f\n", value - 0.01 }' "$ratio" > "$tmp" &&
+mv "$tmp" "$ratio"
+cat "$ratio"
