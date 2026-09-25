@@ -10,6 +10,7 @@ from openpilot.selfdrive.ui.mici.onroad.driver_state import DriverStateRenderer
 from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.mici.onroad.model_renderer import ModelRenderer
 from openpilot.selfdrive.ui.mici.onroad.confidence_ball import ConfidenceBall
+from openpilot.selfdrive.ui.mici.onroad.stock_confidence_ball import ConfidenceBall as StockConfidenceBall
 from openpilot.selfdrive.ui.mici.onroad.cameraview import CameraView
 from openpilot.system.ui.lib.application import FontWeight, gui_app, MousePos, MouseEvent, TextAlignment, TextAlignmentVertical
 from openpilot.system.ui.widgets.label import UnifiedLabel
@@ -39,6 +40,7 @@ WIDE_CAM_MAX_SPEED = 5.0  # m/s (10 mph)
 ROAD_CAM_MIN_SPEED = 10  # m/s (25 mph)
 
 CAM_Y_OFFSET = 20
+STOCK_HUD_HOLD_SECONDS = 5.0
 
 # CAMERA OFFSET DISPLAY - edit these font sizes (pixels).
 CAMERA_OFFSET_VALUE_FONT_SIZE = 72
@@ -177,11 +179,13 @@ class AugmentedRoadView(CameraView):
     self._content_rect = rl.Rectangle()
     self._face_press: tuple[float, float, float] | None = None
     self._hold_toggled = False
+    self._hud_hold_toggled = False
     self._offset_press_active = False
     self._offset_controls_until = 0.0
     self._camera_offset_value = float(ui_state.params.get('CameraOffset', return_default=True))
     self._speedometer_visible = True
     self._speedometer_large = False
+    self._stock_hud = False
 
     # Bookmark icon with swipe gesture
     self._bookmark_icon = BookmarkIcon(bookmark_callback)
@@ -191,6 +195,7 @@ class AugmentedRoadView(CameraView):
     self._alert_renderer = AlertRenderer()
     self._driver_state_renderer = DriverStateRenderer()
     self._confidence_ball = ConfidenceBall()
+    self._stock_confidence_ball = StockConfidenceBall()
     self._offroad_label = UnifiedLabel("start the car to\nuse sunnypilot", 54, FontWeight.DISPLAY,
                                        text_color=rl.Color(255, 255, 255, int(255 * 0.9)),
                                        alignment=TextAlignment.CENTER,
@@ -227,16 +232,32 @@ class AugmentedRoadView(CameraView):
     if not ui_state.started:
       super()._handle_mouse_press(mouse_pos)
       return
+    if self._stock_hud:
+      super()._handle_mouse_press(mouse_pos)
     self._face_press = None
     if not self._inside_face(mouse_pos):
       return
     now = rl.get_time()
     self._face_press = (now, mouse_pos.x, mouse_pos.y)
     self._hold_toggled = False
+    self._hud_hold_toggled = False
     self._offset_press_active = now < self._offset_controls_until
 
   def _toggle_speedometer_for_hold(self, now: float) -> None:
-    if self._face_press is not None and not self._hold_toggled and now - self._face_press[0] >= 0.6:
+    if self._face_press is None or self._hud_hold_toggled:
+      return
+    elapsed = now - self._face_press[0]
+    # Check the five-second action even after the shorter hold has fired.
+    if elapsed > STOCK_HUD_HOLD_SECONDS:
+      self._stock_hud = not self._stock_hud
+      self._hud_hold_toggled = True
+      self._hold_toggled = True
+      self._offset_controls_until = 0.0
+      self._speedometer_visible = not self._stock_hud
+      if self._stock_hud:
+        self._confidence_ball.release_face_texture()
+      return
+    if not self._stock_hud and not self._hold_toggled and elapsed >= 0.6:
       self._speedometer_large = not self._speedometer_large
       self._speedometer_visible = True
       self._hold_toggled = True
@@ -270,6 +291,9 @@ class AugmentedRoadView(CameraView):
     self._toggle_speedometer_for_hold(now)
     self._face_press = None
     if self._hold_toggled:
+      return
+    if self._stock_hud:
+      super()._handle_mouse_release(mouse_pos)
       return
     # Offset controls take priority over the speedometer.
     self._speedometer_visible = False
@@ -364,7 +388,8 @@ class AugmentedRoadView(CameraView):
     )
 
     # Update and draw the side indicator independently of face visibility.
-    self._confidence_ball.render(self.rect)
+    if not self._stock_hud:
+      self._confidence_ball.render(self.rect)
 
     # Enable scissor mode to clip all rendering within content rectangle boundaries
     # This creates a rendering viewport that prevents graphics from drawing outside the border
@@ -385,8 +410,9 @@ class AugmentedRoadView(CameraView):
     rl.draw_texture_ex(self._fade_texture, rl.Vector2(self._content_rect.x, self._content_rect.y), 0.0, 1.0, rl.WHITE)
 
     # Continuous triangle animation sits below speed, driver monitoring, steering, and alerts.
-    self._confidence_ball.draw_hud_face(self._content_rect)
-    self._draw_touch_controls()
+    if not self._stock_hud:
+      self._confidence_ball.draw_hud_face(self._content_rect)
+      self._draw_touch_controls()
 
     alert_to_render, not_animating_out = self._alert_renderer.will_render()
 
@@ -397,12 +423,13 @@ class AugmentedRoadView(CameraView):
     self._driver_state_renderer.set_position(self._rect.x + 16, self._rect.y + 10)
     self._driver_state_renderer.render()
 
-    self._hud_renderer.show_current_speed = self._speedometer_visible
-    self._hud_renderer.set_can_draw_top_icons(self._speedometer_visible and alert_to_render is None)
+    self._hud_renderer.show_current_speed = not self._stock_hud and self._speedometer_visible
+    self._hud_renderer.set_can_draw_top_icons((self._stock_hud or self._speedometer_visible) and alert_to_render is None)
     self._hud_renderer.set_wheel_critical_icon(alert_to_render is not None and not not_animating_out and
                                                alert_to_render.visual_alert == car.CarControl.HUDControl.VisualAlert.steerRequired)
     self._hud_renderer.render(self._content_rect)
-    self._draw_speedometer()
+    if not self._stock_hud:
+      self._draw_speedometer()
     self._alert_renderer.render(self._content_rect)
 
     # Draw fake rounded border
@@ -414,6 +441,8 @@ class AugmentedRoadView(CameraView):
     # Custom UI extension point - add custom overlays here
     # Use self._content_rect for positioning within camera bounds
 
+    if self._stock_hud:
+      self._stock_confidence_ball.render(self.rect)
     self._bookmark_icon.render(self.rect)
 
   def _switch_stream_if_needed(self, sm):
