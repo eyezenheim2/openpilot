@@ -45,7 +45,11 @@ class ConfidenceBall(Widget, ConfidenceBallSP):
       return
     self._draw_face_background(rect)
     phase = (rl.get_time() * LEAD_TUNNEL_SPEED) % 1.0
-    self._draw_lead_tunnel(rect, phase, 1.0)
+    sm = ui_state.sm
+    face_detected = (sm.all_checks(["driverMonitoringState"]) and
+                     sm.recv_frame["driverMonitoringState"] > ui_state.started_frame and
+                     sm["driverMonitoringState"].visionPolicyState.faceDetected)
+    self._draw_lead_tunnel(rect, phase, 1.0, colorful=face_detected)
     timestamp = time.time()
     self._draw_clock(rect, timestamp)
     self._draw_date(rect, timestamp)
@@ -72,7 +76,7 @@ class ConfidenceBall(Widget, ConfidenceBallSP):
     self._face_texture_checked = False
 
   @staticmethod
-  def _draw_lead_tunnel(panel: rl.Rectangle, phase: float, alpha: float) -> None:
+  def _draw_lead_tunnel(panel: rl.Rectangle, phase: float, alpha: float, colorful: bool = False) -> None:
     """Perspective triangle outlines; clipped without altering the caller's scissor."""
     if alpha <= 0:
       return
@@ -112,6 +116,11 @@ class ConfidenceBall(Widget, ConfidenceBallSP):
         points = [(cx + radius*math.cos(angle+j*math.tau/3),
                    cy + radius*math.sin(angle+j*math.tau/3)) for j in range(3)]
         color = rl.Color(180, 185, 190, opacity // 4) if inverted else rl.Color(235, 240, 245, opacity)
+        if colorful:
+          # Rainbow colors travel with the rings; inverted triangles use complementary hues.
+          hue = (depth * 360.0 + (180.0 if inverted else 0.0)) % 360.0
+          color = rl.color_from_hsv(hue, 0.85, 1.0)
+          color.a = opacity // 4 if inverted else opacity
         for j in range(3):
           clipped_line(points[j], points[(j+1)%3], width, color)
 
