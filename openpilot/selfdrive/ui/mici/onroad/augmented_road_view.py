@@ -4,6 +4,7 @@ from openpilot.cereal import log
 from opendbc.car.structs import car
 from openpilot.cereal.visionipc import VisionStreamType
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
+from openpilot.selfdrive.ui.lib.dm_hud_toggle import DmHudToggle
 from openpilot.selfdrive.ui.mici.onroad import SIDE_PANEL_WIDTH
 from openpilot.selfdrive.ui.mici.onroad.alert_renderer import AlertRenderer
 from openpilot.selfdrive.ui.mici.onroad.driver_state import DriverStateRenderer
@@ -186,6 +187,7 @@ class AugmentedRoadView(CameraView):
     self._speedometer_visible = True
     self._speedometer_large = False
     self._stock_hud = False
+    self._dm_hud_toggle = DmHudToggle()
 
     # Bookmark icon with swipe gesture
     self._bookmark_icon = BookmarkIcon(bookmark_callback)
@@ -209,6 +211,7 @@ class AugmentedRoadView(CameraView):
 
   def _update_state(self):
     super()._update_state()
+    self._update_dm_hud_toggle()
 
     if not ui_state.started:
       self._face_press = None
@@ -222,6 +225,27 @@ class AugmentedRoadView(CameraView):
       self._offroad_label.set_text("openpilot can't start\ncheck alerts")
     else:
       self._offroad_label.set_text("start the car to\nuse sunnypilot")
+
+  def _update_dm_hud_toggle(self) -> None:
+    sm = ui_state.sm
+    service = "driverMonitoringState"
+    if (not ui_state.started or not sm.all_checks([service]) or
+        sm.recv_frame[service] <= ui_state.started_frame):
+      self._dm_hud_toggle.reset()
+      return
+    if sm.updated[service]:
+      face_detected = sm[service].visionPolicyState.faceDetected
+      if self._dm_hud_toggle.update(face_detected, sm.logMonoTime[service] * 1e-9):
+        self._toggle_stock_hud()
+        # Cancel any touch action that began in the previous HUD mode.
+        self._face_press = None
+
+  def _toggle_stock_hud(self) -> None:
+    self._stock_hud = not self._stock_hud
+    self._offset_controls_until = 0.0
+    self._speedometer_visible = not self._stock_hud
+    if self._stock_hud:
+      self._confidence_ball.release_face_texture()
 
   def _inside_face(self, pos: MousePos) -> bool:
     rect = self.rect
@@ -249,13 +273,9 @@ class AugmentedRoadView(CameraView):
     elapsed = now - self._face_press[0]
     # Check the five-second action even after the shorter hold has fired.
     if elapsed > STOCK_HUD_HOLD_SECONDS:
-      self._stock_hud = not self._stock_hud
+      self._toggle_stock_hud()
       self._hud_hold_toggled = True
       self._hold_toggled = True
-      self._offset_controls_until = 0.0
-      self._speedometer_visible = not self._stock_hud
-      if self._stock_hud:
-        self._confidence_ball.release_face_texture()
       return
     if not self._stock_hud and not self._hold_toggled and elapsed >= 0.6:
       self._speedometer_large = not self._speedometer_large
