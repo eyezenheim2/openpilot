@@ -236,9 +236,23 @@ class AugmentedRoadView(CameraView):
     if sm.updated[service]:
       face_detected = sm[service].visionPolicyState.faceDetected
       if self._dm_hud_toggle.update(face_detected, sm.logMonoTime[service] * 1e-9):
-        self._toggle_stock_hud()
+        self._cycle_hud()
         # Cancel any touch action that began in the previous HUD mode.
         self._face_press = None
+
+  def _cycle_hud(self) -> None:
+    # Custom HUD -> centered speedometer -> stock HUD -> custom HUD.
+    if self._stock_hud:
+      self._stock_hud = False
+      self._speedometer_large = False
+    elif self._speedometer_large:
+      self._stock_hud = True
+      self._speedometer_large = False
+      self._confidence_ball.release_face_texture()
+    else:
+      self._speedometer_large = True
+    self._offset_controls_until = 0.0
+    self._speedometer_visible = not self._stock_hud
 
   def _toggle_stock_hud(self) -> None:
     self._stock_hud = not self._stock_hud
