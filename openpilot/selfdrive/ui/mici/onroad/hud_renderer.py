@@ -111,6 +111,7 @@ class HudRenderer(Widget):
 
     self._can_draw_top_icons = True
     self._show_wheel_critical = False
+    self._show_steering_wheel = True
 
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
     self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
@@ -132,6 +133,9 @@ class HudRenderer(Widget):
 
     self._set_speed_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
     self._chestnut_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
+
+  def set_show_steering_wheel(self, show: bool) -> None:
+    self._show_steering_wheel = show
 
   def set_wheel_critical_icon(self, critical: bool):
     """Set the wheel icon to critical or normal state."""
@@ -253,7 +257,8 @@ class HudRenderer(Widget):
 
     # color and draw
     color = rl.Color(255, 255, 255, int(self._wheel_alpha_filter.x))
-    rl.draw_texture_pro(wheel_txt, src_rect, dest_rect, origin, rotation, color)
+    if self._show_steering_wheel or self._show_wheel_critical:
+      rl.draw_texture_pro(wheel_txt, src_rect, dest_rect, origin, rotation, color)
 
     if self._show_wheel_critical:
       # Draw exclamation point icon
