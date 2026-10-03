@@ -450,12 +450,16 @@ class AugmentedRoadView(CameraView):
 
     alert_to_render, not_animating_out = self._alert_renderer.will_render()
 
-    # Hide DMoji when disengaged unless AlwaysOnDM is enabled
-    should_draw_dmoji = (not self._hud_renderer.drawing_top_icons() and
+    # Both custom layouts hide status icons while engaged.
+    hide_status_icons = not self._stock_hud and ui_state.sm['selfdriveState'].enabled
+    self._hud_renderer.set_show_steering_wheel(not hide_status_icons)
+    # Hide DMoji when disengaged unless AlwaysOnDM is enabled.
+    should_draw_dmoji = (not hide_status_icons and not self._hud_renderer.drawing_top_icons() and
                          (ui_state.status != UIStatus.DISENGAGED or ui_state.always_on_dm))
     self._driver_state_renderer.set_should_draw(should_draw_dmoji)
     self._driver_state_renderer.set_position(self._rect.x + 16, self._rect.y + 10)
-    self._driver_state_renderer.render()
+    if not hide_status_icons:
+      self._driver_state_renderer.render()
 
     self._hud_renderer.show_current_speed = not self._stock_hud and self._speedometer_visible
     self._hud_renderer.set_can_draw_top_icons((self._stock_hud or self._speedometer_visible) and alert_to_render is None)
