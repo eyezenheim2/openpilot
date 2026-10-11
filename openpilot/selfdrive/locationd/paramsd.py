@@ -25,7 +25,7 @@ OFFSET_LOWERED_MAX = 8.0
 MIN_ACTIVE_SPEED = 1.0
 LOW_ACTIVE_SPEED = 10.0
 FIXED_STEER_RATIO_MAX = 23.33  # hard cap, regardless of CP.steerRatio
-FIXED_STEER_RATIO_PARAM = "FixedSteerRatio"
+FIXED_STEER_RATIO_PATH = Path("/data/params/FixedSteerRatio")
 
 
 class VehicleParamsLearner:
@@ -262,6 +262,17 @@ def retrieve_initial_vehicle_params(params: Params, CP: car.CarParams, replay: b
   return steer_ratio, stiffness_factor, angle_offset_deg, p_initial
 
 
+def initialize_fixed_steer_ratio(fixed_steer_ratio_path: Path, CP: car.CarParams) -> None:
+  """Create the override once at startup without replacing an existing user value."""
+  try:
+    with fixed_steer_ratio_path.open("x") as f:
+      f.write(str(min(CP.steerRatio, FIXED_STEER_RATIO_MAX)))
+  except FileExistsError:
+    pass
+  except OSError:
+    cloudlog.exception("Unable to initialize FixedSteerRatio parameter")
+
+
 def read_fixed_steer_ratio(fixed_steer_ratio_path: Path, CP: car.CarParams) -> float | None:
   """Read the user-requested fixed steer ratio from disk, if present, clipped to a sane
   range around CP.steerRatio and hard-capped at FIXED_STEER_RATIO_MAX. Returns None if the
@@ -295,9 +306,10 @@ def main():
 
   params = Params()
   CP = messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams)
-  # get_param_path deliberately supports custom keys and resolves the active params store
-  # (normally /data/params/d), unlike the old hard-coded parent-directory path.
-  fixed_steer_ratio_path = Path(params.get_param_path(FIXED_STEER_RATIO_PARAM))
+  # Match the onroad UI's custom override file, outside the /data/params/d store.
+  fixed_steer_ratio_path = FIXED_STEER_RATIO_PATH
+  if not REPLAY:
+    initialize_fixed_steer_ratio(fixed_steer_ratio_path, CP)
 
   steer_ratio, stiffness_factor, angle_offset_deg, pInitial = retrieve_initial_vehicle_params(params, CP, REPLAY, DEBUG)
   fixed_steer_ratio = read_fixed_steer_ratio(fixed_steer_ratio_path, CP)
