@@ -1,0 +1,50 @@
+import math
+
+import pyray as rl
+
+from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.system.ui.lib.application import FontWeight, gui_app
+
+
+class BrakePressureBall:
+  """Brake disc icon driven by openpilot's commanded braking percentage."""
+
+  def __init__(self):
+    self._font = gui_app.font(FontWeight.SEMI_BOLD)
+
+  @staticmethod
+  def brake_percent() -> int:
+    # Match the replay telemetry: 4 m/s^2 of commanded deceleration is 100%.
+    accel = float(ui_state.sm["carControl"].actuators.accel)
+    if not math.isfinite(accel):
+      return 0
+    return round(max(0.0, min(1.0, -accel / 4.0)) * 100)
+
+  def render_at(self, center_x: float, center_y: float, radius: float, percent: int) -> None:
+    percent = max(0, min(100, percent))
+    center = rl.Vector2(center_x, center_y)
+
+    # Brake-disc symbol: black at 0% and white at 100% brake pressed.
+    shade = round(255 * percent / 100)
+    icon_color = rl.Color(shade, shade, shade, 255)
+    cutout = rl.Color(10, 13, 18, 240)
+    rl.draw_circle_v(center, radius + 5, rl.Color(0, 0, 0, 150))
+    rl.draw_circle_v(center, radius, rl.Color(112, 118, 126, 235))
+    rl.draw_ring(center, radius * 0.68, radius * 0.96, 0, 360, 64, icon_color)
+    rl.draw_ring(center, radius * 0.58, radius * 0.64, 0, 360, 64, icon_color)
+    rl.draw_circle_v(center, radius * 0.53, cutout)
+    # Leave a solid center badge large enough for a readable percentage.
+    rl.draw_circle_v(center, radius * 0.36, cutout)
+    rl.draw_circle_lines(int(center_x), int(center_y), radius * 0.36, icon_color)
+    for i in range(8):
+      angle = i * math.tau / 8
+      hole = rl.Vector2(center_x + math.cos(angle) * radius * 0.40,
+                        center_y + math.sin(angle) * radius * 0.40)
+      rl.draw_circle_v(hole, radius * 0.075, cutout)
+
+    label = f"{percent}%"
+    size = max(18, round(radius * 0.42))
+    measured = rl.measure_text_ex(self._font, label, size, 0)
+    text_pos = rl.Vector2(center_x - measured.x / 2, center_y - measured.y / 2)
+    rl.draw_text_ex(self._font, label, rl.Vector2(text_pos.x + 2, text_pos.y + 2), size, 0, rl.BLACK)
+    rl.draw_text_ex(self._font, label, text_pos, size, 0, rl.WHITE)
