@@ -1,10 +1,8 @@
-import math
 import time
 
 import pyray as rl
 
 from openpilot.selfdrive.ui.sunnypilot.onroad.clock_background import ClockBackground
-from openpilot.selfdrive.ui.ui_state import ui_state
 
 
 class BrakePressureBall:
@@ -12,11 +10,7 @@ class BrakePressureBall:
 
   @staticmethod
   def brake_percent() -> int:
-    # Match the replay telemetry: 4 m/s^2 of commanded deceleration is 100%.
-    accel = float(ui_state.sm["carControl"].actuators.accel)
-    if not math.isfinite(accel):
-      return 0
-    return round(max(0.0, min(1.0, -accel / 4.0)) * 100)
+    return ClockBackground.brake_percent()
 
   def render_at(self, center_x: float, center_y: float, radius: float, percent: int) -> None:
     percent = max(0, min(100, percent))
