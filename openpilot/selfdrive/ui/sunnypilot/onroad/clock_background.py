@@ -39,7 +39,6 @@ class ClockBackground:
                      sm["driverMonitoringState"].visionPolicyState.faceDetected)
     self._draw_lead_tunnel(rect, phase, 1.0, colorful=face_detected)
     timestamp = time.time()
-    self._draw_clock(rect, timestamp)
     self._draw_date(rect, timestamp)
 
   def _draw_face_background(self, rect: rl.Rectangle):
@@ -123,12 +122,12 @@ class ClockBackground:
                  (hours / 12.0, minutes / 60.0, seconds / 60.0))
 
   @staticmethod
-  def _draw_clock(rect: rl.Rectangle, timestamp: float) -> None:
-    """Live white hands and a red seconds needle over the contour dial."""
-    if rect.width <= 0 or rect.height <= 0:
+  def draw_clock_hands(center_x: float, center_y: float, width: float, height: float, timestamp: float) -> None:
+    """Draw live white hour/minute hands and a red seconds needle."""
+    if width <= 0 or height <= 0:
       return
-    w, h = rect.width, rect.height
-    cx, cy = rect.x + w / 2, rect.y + h / 2
+    w, h = width, height
+    cx, cy = center_x, center_y
     white = rl.Color(250, 250, 245, 255)
     red = rl.Color(244, 48, 40, 255)
     hour, minute, second = ClockBackground._clock_angles(timestamp)
@@ -149,6 +148,12 @@ class ClockBackground:
     rl.draw_circle_v(rl.Vector2(cx, cy), h * 0.013, white)
     rl.draw_circle_v(rl.Vector2(cx, cy), h * 0.009, red)
     rl.draw_circle_v(rl.Vector2(cx, cy), h * 0.004, rl.BLACK)
+
+  @staticmethod
+  def _draw_clock(rect: rl.Rectangle, timestamp: float) -> None:
+    """Compatibility wrapper for drawing hands over a rectangular dial."""
+    ClockBackground.draw_clock_hands(rect.x + rect.width / 2, rect.y + rect.height / 2,
+                                     rect.width, rect.height, timestamp)
 
   @staticmethod
   def _draw_date(rect: rl.Rectangle, timestamp: float) -> None:
