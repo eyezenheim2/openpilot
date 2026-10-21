@@ -160,16 +160,16 @@ class ClockBackground:
     if rect.width <= 0 or rect.height <= 0:
       return
     local = datetime.fromtimestamp(timestamp, CLOCK_TIMEZONE)
+    current_time = local.strftime("%I:%M")
     weekday = ('MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN')[local.weekday()]
-    brake_percent = ClockBackground.brake_percent()
     number_size = rect.height * DATE_NUMBER_SIZE
     weekday_size = rect.height * DATE_WEEKDAY_SIZE
     gap = rect.height * DATE_LINE_GAP
     center_x = rect.x + rect.width * DATE_CENTER_X
     y = rect.y + rect.height * DATE_CENTER_Y - (number_size + gap + weekday_size) / 2
-    percent_size = rect.height * DATE_WEEKDAY_SIZE
-    percent_y = y - gap - percent_size
-    for label, size, weight, line_y in ((f"{brake_percent}%", percent_size, FontWeight.SEMI_BOLD, percent_y),
+    time_size = rect.height * DATE_WEEKDAY_SIZE
+    time_y = y - gap - time_size
+    for label, size, weight, line_y in ((current_time, time_size, FontWeight.SEMI_BOLD, time_y),
                                         (str(local.day), number_size, FontWeight.DISPLAY, y),
                                         (weekday, weekday_size, FontWeight.SEMI_BOLD, y + number_size + gap)):
       font = gui_app.font(weight)
