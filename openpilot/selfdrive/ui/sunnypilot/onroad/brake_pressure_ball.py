@@ -1,16 +1,14 @@
 import math
+import time
 
 import pyray as rl
 
+from openpilot.selfdrive.ui.sunnypilot.onroad.clock_background import ClockBackground
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.system.ui.lib.application import FontWeight, gui_app
 
 
 class BrakePressureBall:
   """Brake disc icon driven by openpilot's commanded braking percentage."""
-
-  def __init__(self):
-    self._font = gui_app.font(FontWeight.SEMI_BOLD)
 
   @staticmethod
   def brake_percent() -> int:
@@ -33,7 +31,7 @@ class BrakePressureBall:
     rl.draw_ring(center, radius * 0.68, radius * 0.96, 0, 360, 64, icon_color)
     rl.draw_ring(center, radius * 0.58, radius * 0.64, 0, 360, 64, icon_color)
     rl.draw_circle_v(center, radius * 0.53, cutout)
-    # Leave a solid center badge large enough for a readable percentage.
+    # Keep a dark center badge for the clock hands.
     rl.draw_circle_v(center, radius * 0.36, cutout)
     rl.draw_circle_lines(int(center_x), int(center_y), radius * 0.36, icon_color)
     for i in range(8):
@@ -42,9 +40,6 @@ class BrakePressureBall:
                         center_y + math.sin(angle) * radius * 0.40)
       rl.draw_circle_v(hole, radius * 0.075, cutout)
 
-    label = f"{percent}%"
-    size = max(18, round(radius * 0.42))
-    measured = rl.measure_text_ex(self._font, label, size, 0)
-    text_pos = rl.Vector2(center_x - measured.x / 2, center_y - measured.y / 2)
-    rl.draw_text_ex(self._font, label, rl.Vector2(text_pos.x + 2, text_pos.y + 2), size, 0, rl.BLACK)
-    rl.draw_text_ex(self._font, label, text_pos, size, 0, rl.WHITE)
+    # Keep the live clock hands inside the brake disc's center badge. The
+    # surrounding disc ring continues to show commanded braking intensity.
+    ClockBackground.draw_clock_hands(center_x, center_y, radius * 0.72, radius * 0.72, time.time())
