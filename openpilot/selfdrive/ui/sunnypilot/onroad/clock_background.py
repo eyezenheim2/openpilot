@@ -161,17 +161,27 @@ class ClockBackground:
       return
     local = datetime.fromtimestamp(timestamp, CLOCK_TIMEZONE)
     weekday = ('MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN')[local.weekday()]
+    brake_percent = ClockBackground.brake_percent()
     number_size = rect.height * DATE_NUMBER_SIZE
     weekday_size = rect.height * DATE_WEEKDAY_SIZE
     gap = rect.height * DATE_LINE_GAP
     center_x = rect.x + rect.width * DATE_CENTER_X
     y = rect.y + rect.height * DATE_CENTER_Y - (number_size + gap + weekday_size) / 2
-    for label, size, weight in ((str(local.day), number_size, FontWeight.DISPLAY),
-                                 (weekday, weekday_size, FontWeight.SEMI_BOLD)):
+    percent_size = rect.height * DATE_WEEKDAY_SIZE
+    percent_y = y - gap - percent_size
+    for label, size, weight, line_y in ((f"{brake_percent}%", percent_size, FontWeight.SEMI_BOLD, percent_y),
+                                        (str(local.day), number_size, FontWeight.DISPLAY, y),
+                                        (weekday, weekday_size, FontWeight.SEMI_BOLD, y + number_size + gap)):
       font = gui_app.font(weight)
       measured = rl.measure_text_ex(font, label, size, 0)
-      pos = rl.Vector2(center_x - measured.x / 2, y)
+      pos = rl.Vector2(center_x - measured.x / 2, line_y)
       rl.draw_text_ex(font, label, rl.Vector2(pos.x + 2, pos.y + 2), size, 0, rl.BLACK)
       rl.draw_text_ex(font, label, pos, size, 0, rl.WHITE)
-      y += size + gap
+
+  @staticmethod
+  def brake_percent() -> int:
+    accel = float(ui_state.sm["carControl"].actuators.accel)
+    if not math.isfinite(accel):
+      return 0
+    return round(max(0.0, min(1.0, -accel / 4.0)) * 100)
 
