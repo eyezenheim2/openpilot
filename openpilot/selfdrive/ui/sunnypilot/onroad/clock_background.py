@@ -186,13 +186,15 @@ class ClockBackground:
     rl.draw_text_ex(date_font, date_label, date_pos, number_size, 0, rl.WHITE)
 
     # Minimal analog clock hands beside the date, with no dial or numeric labels.
-    hand_radius = rect.height * 0.045
-    hand_center_x = center_x + date_width / 2 + rect.height * 0.03 + hand_radius
+    hand_radius = rect.height * 0.135
+    date_right = center_x + date_width / 2
+    hud_right = rect.x + rect.width
+    hand_center_x = (date_right + hud_right) / 2
     hand_center_y = date_y + number_size * 0.51
     hour_angle = math.tau * ((local.hour % 12) + local.minute / 60) / 12 - math.pi / 2
     minute_angle = math.tau * local.minute / 60 - math.pi / 2
-    for angle, length, thickness, color in ((hour_angle, hand_radius * 0.58, rect.height * 0.006, rl.WHITE),
-                                            (minute_angle, hand_radius * 0.92, rect.height * 0.004, rl.Color(210, 215, 225, 255))):
+    for angle, length, thickness, color in ((hour_angle, hand_radius * 0.58, rect.height * 0.018, rl.WHITE),
+                                            (minute_angle, hand_radius * 0.92, rect.height * 0.012, rl.Color(210, 215, 225, 255))):
       end = rl.Vector2(hand_center_x + math.cos(angle) * length,
                        hand_center_y + math.sin(angle) * length)
       rl.draw_line_ex(rl.Vector2(hand_center_x + 1, hand_center_y + 1),
