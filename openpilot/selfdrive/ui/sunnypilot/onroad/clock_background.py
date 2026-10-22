@@ -164,19 +164,47 @@ class ClockBackground:
     weekday = ('MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN')[local.weekday()]
     number_size = rect.height * DATE_NUMBER_SIZE
     weekday_size = rect.height * DATE_WEEKDAY_SIZE
+    time_size = weekday_size
     gap = rect.height * DATE_LINE_GAP
     center_x = rect.x + rect.width * DATE_CENTER_X
-    y = rect.y + rect.height * DATE_CENTER_Y - (number_size + gap + weekday_size) / 2
-    time_size = rect.height * DATE_WEEKDAY_SIZE
-    time_y = y - gap - time_size
-    for label, size, weight, line_y in ((current_time, time_size, FontWeight.SEMI_BOLD, time_y),
-                                        (str(local.day), number_size, FontWeight.DISPLAY, y),
-                                        (weekday, weekday_size, FontWeight.SEMI_BOLD, y + number_size + gap)):
-      font = gui_app.font(weight)
-      measured = rl.measure_text_ex(font, label, size, 0)
-      pos = rl.Vector2(center_x - measured.x / 2, line_y)
-      rl.draw_text_ex(font, label, rl.Vector2(pos.x + 2, pos.y + 2), size, 0, rl.BLACK)
-      rl.draw_text_ex(font, label, pos, size, 0, rl.WHITE)
+    stack_height = time_size + gap + number_size + gap + weekday_size
+    time_y = rect.y + rect.height * DATE_CENTER_Y - stack_height / 2
+    date_y = time_y + time_size + gap
+    date_label = str(local.day)
+    time_font = gui_app.font(FontWeight.SEMI_BOLD)
+    time_width = rl.measure_text_ex(time_font, current_time, time_size, 0).x
+    time_pos = rl.Vector2(center_x - time_width / 2, time_y)
+    rl.draw_text_ex(time_font, current_time, rl.Vector2(time_pos.x + 2, time_pos.y + 2),
+                    time_size, 0, rl.BLACK)
+    rl.draw_text_ex(time_font, current_time, time_pos, time_size, 0, rl.WHITE)
+
+    date_font = gui_app.font(FontWeight.DISPLAY)
+    date_width = rl.measure_text_ex(date_font, date_label, number_size, 0).x
+    date_pos = rl.Vector2(center_x - date_width / 2, date_y)
+    rl.draw_text_ex(date_font, date_label, rl.Vector2(date_pos.x + 2, date_pos.y + 2),
+                    number_size, 0, rl.BLACK)
+    rl.draw_text_ex(date_font, date_label, date_pos, number_size, 0, rl.WHITE)
+
+    # Minimal analog clock hands beside the date, with no dial or numeric labels.
+    hand_radius = rect.height * 0.045
+    hand_center_x = center_x + date_width / 2 + rect.height * 0.03 + hand_radius
+    hand_center_y = date_y + number_size * 0.51
+    hour_angle = math.tau * ((local.hour % 12) + local.minute / 60) / 12 - math.pi / 2
+    minute_angle = math.tau * local.minute / 60 - math.pi / 2
+    for angle, length, thickness, color in ((hour_angle, hand_radius * 0.58, rect.height * 0.006, rl.WHITE),
+                                            (minute_angle, hand_radius * 0.92, rect.height * 0.004, rl.Color(210, 215, 225, 255))):
+      end = rl.Vector2(hand_center_x + math.cos(angle) * length,
+                       hand_center_y + math.sin(angle) * length)
+      rl.draw_line_ex(rl.Vector2(hand_center_x + 1, hand_center_y + 1),
+                      rl.Vector2(end.x + 1, end.y + 1), thickness + 1, rl.BLACK)
+      rl.draw_line_ex(rl.Vector2(hand_center_x, hand_center_y), end, thickness, color)
+
+    weekday_font = gui_app.font(FontWeight.SEMI_BOLD)
+    weekday_width = rl.measure_text_ex(weekday_font, weekday, weekday_size, 0).x
+    weekday_pos = rl.Vector2(center_x - weekday_width / 2, date_y + number_size + gap)
+    rl.draw_text_ex(weekday_font, weekday, rl.Vector2(weekday_pos.x + 2, weekday_pos.y + 2),
+                    weekday_size, 0, rl.BLACK)
+    rl.draw_text_ex(weekday_font, weekday, weekday_pos, weekday_size, 0, rl.WHITE)
 
   @staticmethod
   def brake_percent() -> int:
