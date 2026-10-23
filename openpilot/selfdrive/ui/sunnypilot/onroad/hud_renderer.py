@@ -429,6 +429,10 @@ class HudRendererSP(HudRenderer):
             any(button.is_pressed for button in self._camera_offset_buttons.values()) or
             any(button.is_pressed for button in self._steer_ratio_buttons.values()))
 
+  @property
+  def camera_offset_controls_visible(self) -> bool:
+    return self._camera_offset_controls_visible_frames > 0
+
   @staticmethod
   def _steer_ratio_button_rects(rect: rl.Rectangle) -> dict[str, rl.Rectangle]:
     center_x = rect.x + rect.width / 2
