@@ -1,6 +1,8 @@
 import math
-import pyray as rl
 from dataclasses import dataclass
+from pathlib import Path
+
+import pyray as rl
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus, ChestnutState
@@ -19,6 +21,12 @@ KM_TO_MILE = 0.621371
 CRUISE_DISABLED_CHAR = '–'
 
 SET_SPEED_PERSISTENCE = 2.5  # seconds
+FIXED_STEER_RATIO_PATH = Path("/data/params/FixedSteerRatio")
+STEER_RATIO_STEP = 0.1
+STEER_RATIO_MIN_FACTOR = 0.75
+STEER_RATIO_MAX_FACTOR = 1.25
+STEER_RATIO_ABSOLUTE_MAX = 23.33
+STEER_RATIO_MAX_ADJUST_SPEED = 0.1
 
 
 @dataclass(frozen=True)
@@ -96,6 +104,36 @@ class TurnIntent(Widget):
       self._turn_intent_rotation_filter.update(0)
 
 
+class SteerRatioButton(Widget):
+  def __init__(self, label: str, callback):
+    super().__init__()
+    self._label = label
+    self.active = False
+    self.set_click_callback(callback)
+    self._font = gui_app.font(FontWeight.SEMI_BOLD)
+
+  def _render(self, rect: rl.Rectangle) -> None:
+    center = rl.Vector2(rect.x + rect.width / 2, rect.y + rect.height / 2)
+    if self._label in ("+", "-"):
+      radius = min(rect.width, rect.height) / 2
+      fill = rl.Color(0, 210, 80, 255) if self.enabled else rl.Color(72, 78, 84, 220)
+      if self.is_pressed and self.enabled:
+        fill = rl.Color(0, 165, 60, 255)
+      rl.draw_circle_v(center, radius, fill)
+      rl.draw_circle_lines(int(center.x), int(center.y), radius, rl.Color(255, 255, 255, 120))
+    else:
+      fill = rl.Color(0, 190, 72, 240) if self.enabled and self.active else rl.Color(50, 56, 63, 225)
+      if self.is_pressed and self.enabled:
+        fill = rl.Color(0, 150, 55, 255)
+      rl.draw_rectangle_rounded(rect, 0.35, 8, fill)
+
+    size = min(rect.height * (0.46 if self._label in ("+", "-") else 0.34), 42)
+    measured = rl.measure_text_ex(self._font, self._label, size, 0)
+    rl.draw_text_ex(self._font, self._label,
+                    rl.Vector2(center.x - measured.x / 2, center.y - measured.y / 2),
+                    size, 0, rl.WHITE if self.enabled else rl.Color(175, 180, 188, 255))
+
+
 class HudRenderer(Widget):
   def __init__(self):
     super().__init__()
@@ -133,6 +171,20 @@ class HudRenderer(Widget):
 
     self._set_speed_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
     self._chestnut_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
+
+    try:
+      stock_ratio = float(ui_state.sm['carParams'].steerRatio)
+    except (AttributeError, TypeError, ValueError):
+      stock_ratio = 15.0
+    self._stock_steer_ratio = stock_ratio if stock_ratio > 0 else 15.0
+    self._fixed_steer_ratio = self._stock_steer_ratio
+    self._steer_ratio_enabled = False
+    self._read_fixed_steer_ratio()
+    self._steer_ratio_toggle = self._child(SteerRatioButton("FIXED STEER RATIO: OFF", self._toggle_steer_ratio))
+    self._steer_ratio_buttons = {
+      label: self._child(SteerRatioButton(label, lambda label=label: self._adjust_steer_ratio(label)))
+      for label in ("-", "+")
+    }
 
   def set_show_steering_wheel(self, show: bool) -> None:
     self._show_steering_wheel = show
@@ -192,6 +244,121 @@ class HudRenderer(Widget):
     self._draw_model_source(rect)
 
     self._draw_steering_wheel(rect)
+    self._draw_steer_ratio_controls(rect)
+
+  def _read_fixed_steer_ratio(self) -> None:
+    try:
+      ratio_text = FIXED_STEER_RATIO_PATH.read_text().strip()
+      ratio = float(ratio_text)
+    except (OSError, TypeError, ValueError):
+      return
+    self._fixed_steer_ratio = self._clamp_steer_ratio(ratio)
+    self._steer_ratio_enabled = True
+
+  def _clamp_steer_ratio(self, ratio: float) -> float:
+    lower = min(self._stock_steer_ratio * STEER_RATIO_MIN_FACTOR, STEER_RATIO_ABSOLUTE_MAX)
+    upper = max(lower, min(self._stock_steer_ratio * STEER_RATIO_MAX_FACTOR, STEER_RATIO_ABSOLUTE_MAX))
+    return max(lower, min(ratio, upper))
+
+  def _steer_ratio_adjustment_allowed(self) -> bool:
+    sm = ui_state.sm
+    return (sm.valid['carState'] and sm.valid['carControl'] and
+            sm['carState'].vEgo <= STEER_RATIO_MAX_ADJUST_SPEED and
+            not sm['carControl'].enabled)
+
+  def _toggle_steer_ratio(self) -> None:
+    if not self._steer_ratio_adjustment_allowed():
+      return
+    if self._steer_ratio_enabled:
+      if not self._write_fixed_steer_ratio(""):
+        return
+      self._steer_ratio_enabled = False
+      self._fixed_steer_ratio = self._stock_steer_ratio
+    else:
+      self._fixed_steer_ratio = self._stock_steer_ratio
+      if not self._write_fixed_steer_ratio():
+        return
+      self._steer_ratio_enabled = True
+
+  def _adjust_steer_ratio(self, direction: str) -> None:
+    if not self._steer_ratio_enabled or not self._steer_ratio_adjustment_allowed():
+      return
+    previous = self._fixed_steer_ratio
+    delta = STEER_RATIO_STEP if direction == "+" else -STEER_RATIO_STEP
+    self._fixed_steer_ratio = self._clamp_steer_ratio(round(self._fixed_steer_ratio + delta, 1))
+    if not self._write_fixed_steer_ratio():
+      self._fixed_steer_ratio = previous
+
+  def _write_fixed_steer_ratio(self, value: str | None = None) -> bool:
+    value = f"{self._fixed_steer_ratio:.1f}" if value is None else value
+    temp_path = FIXED_STEER_RATIO_PATH.with_name(f".{FIXED_STEER_RATIO_PATH.name}.tmp")
+    try:
+      temp_path.write_text(value)
+      temp_path.replace(FIXED_STEER_RATIO_PATH)
+      return True
+    except OSError:
+      try:
+        temp_path.unlink(missing_ok=True)
+      except OSError:
+        pass
+      return False
+
+  def _draw_steer_ratio_controls(self, rect: rl.Rectangle) -> None:
+    can_adjust = self._steer_ratio_adjustment_allowed()
+    control_height = max(44.0, min(rect.height * 0.075, 74.0))
+    toggle_width = min(rect.width * 0.38, control_height * 6.2)
+    toggle_rect = rl.Rectangle(rect.x + (rect.width - toggle_width) / 2,
+                               rect.y + rect.height * 0.92 - control_height / 2,
+                               toggle_width, control_height)
+    self._steer_ratio_toggle._label = "FIXED STEER RATIO: ON" if self._steer_ratio_enabled else "FIXED STEER RATIO: OFF"
+    self._steer_ratio_toggle.active = self._steer_ratio_enabled
+    self._steer_ratio_toggle.set_enabled(can_adjust)
+
+    if self._steer_ratio_enabled:
+      diameter = control_height
+      center_y = rect.y + rect.height * 0.79
+      for label, fraction in (("-", 0.39), ("+", 0.61)):
+        button = self._steer_ratio_buttons[label]
+        button.set_enabled(can_adjust)
+        button.render(rl.Rectangle(rect.x + rect.width * fraction - diameter / 2,
+                                   center_y - diameter / 2, diameter, diameter))
+
+      value = f"{self._fixed_steer_ratio:.1f}"
+      value_size = min(rect.height * 0.062, 64)
+      value_width = rl.measure_text_ex(self._font_bold, value, value_size, 0).x
+      value_pos = rl.Vector2(rect.x + rect.width / 2 - value_width / 2,
+                             center_y - value_size * 0.55)
+      rl.draw_text_ex(self._font_bold, value, value_pos, value_size, 0, rl.WHITE)
+      applied_ratio = float(ui_state.sm['vehicleParameters'].steerRatio)
+      ratio_applied = abs(applied_ratio - self._fixed_steer_ratio) < STEER_RATIO_STEP / 2
+      status = ("FIXED RATIO ACTIVE" if ratio_applied else "APPLYING FIXED RATIO") if can_adjust else "PARK TO CHANGE"
+      status_size = min(rect.height * 0.022, 24)
+      status_width = rl.measure_text_ex(self._font_medium, status, status_size, 0).x
+      rl.draw_text_ex(self._font_medium, status,
+                      rl.Vector2(rect.x + rect.width / 2 - status_width / 2,
+                                 center_y + diameter * 0.58),
+                      status_size, 0, COLORS.WHITE_TRANSLUCENT)
+
+    self._steer_ratio_toggle.render(toggle_rect)
+
+  def is_steer_ratio_control_at(self, point) -> bool:
+    rect = self.rect
+    control_height = max(44.0, min(rect.height * 0.075, 74.0))
+    toggle_width = min(rect.width * 0.38, control_height * 6.2)
+    toggle_rect = rl.Rectangle(rect.x + (rect.width - toggle_width) / 2,
+                               rect.y + rect.height * 0.92 - control_height / 2,
+                               toggle_width, control_height)
+    if rl.check_collision_point_rec(point, toggle_rect):
+      return True
+    if not self._steer_ratio_enabled:
+      return False
+    center_y = rect.y + rect.height * 0.79
+    for fraction in (0.39, 0.61):
+      button_rect = rl.Rectangle(rect.x + rect.width * fraction - control_height / 2,
+                                 center_y - control_height / 2, control_height, control_height)
+      if rl.check_collision_point_rec(point, button_rect):
+        return True
+    return False
 
   def _draw_model_source(self, rect: rl.Rectangle) -> None:
     if ui_state.sm.recv_frame['selfdriveState'] < ui_state.started_frame:
