@@ -24,6 +24,7 @@ from enum import IntEnum
 if gui_app.sunnypilot_ui():
   from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_renderer import HudRendererSP as HudRenderer
   from openpilot.selfdrive.ui.sunnypilot.ui_state import OnroadTimerStatus
+from openpilot.selfdrive.ui.mici.onroad.brake_pressure_ball import BrakePressureBall
 
 OpState = log.SelfdriveState.OpenpilotState
 CALIBRATED = log.ExtrinsicsCalibration.Status.calibrated
@@ -198,6 +199,7 @@ class AugmentedRoadView(CameraView):
     self._driver_state_renderer = DriverStateRenderer()
     self._confidence_ball = ConfidenceBall()
     self._stock_confidence_ball = StockConfidenceBall()
+    self._brake_pressure = BrakePressureBall()
     self._offroad_label = UnifiedLabel("start the car to\nuse sunnypilot", 54, FontWeight.DISPLAY,
                                        text_color=rl.Color(255, 255, 255, int(255 * 0.9)),
                                        alignment=TextAlignment.CENTER,
@@ -269,6 +271,9 @@ class AugmentedRoadView(CameraView):
   def _handle_mouse_press(self, mouse_pos: MousePos):
     if not ui_state.started:
       super()._handle_mouse_press(mouse_pos)
+      return
+    if self._hud_renderer.is_steer_ratio_control_at(mouse_pos):
+      self._face_press = None
       return
     if self._stock_hud:
       super()._handle_mouse_press(mouse_pos)
@@ -446,6 +451,14 @@ class AugmentedRoadView(CameraView):
     # Continuous triangle animation sits below speed, driver monitoring, steering, and alerts.
     if not self._stock_hud:
       self._confidence_ball.draw_hud_face(self._content_rect)
+      offset_controls_visible = rl.get_time() < self._offset_controls_until
+      self._brake_pressure.render_at(
+        self._content_rect.x + self._content_rect.width * 0.51,
+        self._content_rect.y + self._content_rect.height * 0.52,
+        min(self._content_rect.width, self._content_rect.height) * 0.17,
+        self._brake_pressure.brake_percent(),
+        show_readout=not offset_controls_visible,
+      )
       self._draw_touch_controls()
 
     alert_to_render, not_animating_out = self._alert_renderer.will_render()
