@@ -41,5 +41,6 @@ class AugmentedRoadViewSP:
       _content_rect.y + _content_rect.height / 2,
       min(_content_rect.width, _content_rect.height) * 0.34,
       self._brake_pressure_icon.brake_percent(),
+      show_readout=not self._hud_renderer.camera_offset_controls_visible,
     )
 
