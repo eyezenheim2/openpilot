@@ -433,6 +433,10 @@ class HudRendererSP(HudRenderer):
   def camera_offset_controls_visible(self) -> bool:
     return self._camera_offset_controls_visible_frames > 0
 
+  @property
+  def camera_offset_display_visible(self) -> bool:
+    return time.monotonic() < self._camera_offset_display_until
+
   @staticmethod
   def _steer_ratio_button_rects(rect: rl.Rectangle) -> dict[str, rl.Rectangle]:
     center_x = rect.x + rect.width / 2
@@ -471,6 +475,11 @@ class HudRendererSP(HudRenderer):
 
   def _render(self, rect: rl.Rectangle) -> None:
     self._update_camera_offset()
+    if self.camera_offset_display_visible:
+      backdrop_height = min(rect.height, max(CAMERA_OFFSET_BUTTON_HEIGHT, round(rect.height * 0.40)))
+      backdrop_y = rect.y + (rect.height - backdrop_height) / 2
+      rl.draw_rectangle_rec(rl.Rectangle(rect.x, backdrop_y, rect.width, backdrop_height), rl.BLACK)
+
     if self._camera_offset_controls_visible_frames > 0:
       self._camera_offset_controls_visible_frames -= 1
       for label, button_rect in self._camera_offset_button_rects(rect).items():
