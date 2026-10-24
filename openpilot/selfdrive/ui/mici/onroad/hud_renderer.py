@@ -196,6 +196,21 @@ class HudRenderer(Widget):
   def set_steer_ratio_controls_visible(self, visible: bool) -> None:
     self._steer_ratio_controls_visible = visible
 
+  def steer_ratio_value(self) -> float:
+    return self._fixed_steer_ratio
+
+  def steer_ratio_enabled(self) -> bool:
+    return self._steer_ratio_enabled
+
+  def steer_ratio_adjustment_allowed(self) -> bool:
+    return self._steer_ratio_adjustment_allowed()
+
+  def toggle_steer_ratio(self) -> None:
+    self._toggle_steer_ratio()
+
+  def adjust_steer_ratio(self, direction: str) -> None:
+    self._adjust_steer_ratio(direction)
+
   def set_wheel_critical_icon(self, critical: bool):
     """Set the wheel icon to critical or normal state."""
     self._show_wheel_critical = critical
@@ -311,68 +326,18 @@ class HudRenderer(Widget):
       return False
 
   def _draw_steer_ratio_controls(self, rect: rl.Rectangle) -> None:
-    if not self._steer_ratio_controls_visible:
-      return
-
-    can_adjust = self._steer_ratio_adjustment_allowed()
-    control_height = max(44.0, min(rect.height * 0.075, 74.0))
-    center_x = rect.x + rect.width * 0.78
-    toggle_width = min(rect.width * 0.28, control_height * 6.2)
-    toggle_rect = rl.Rectangle(center_x - toggle_width / 2,
-                               rect.y + rect.height * 0.89 - control_height / 2,
-                               toggle_width, control_height)
-    self._steer_ratio_toggle._label = "FIXED STEER RATIO: ON" if self._steer_ratio_enabled else "FIXED STEER RATIO: OFF"
-    self._steer_ratio_toggle.active = self._steer_ratio_enabled
-    self._steer_ratio_toggle.set_enabled(can_adjust)
-
-    if self._steer_ratio_enabled:
-      diameter = control_height
-      center_y = rect.y + rect.height * 0.73
-      for label, fraction in (("-", 0.68), ("+", 0.88)):
-        button = self._steer_ratio_buttons[label]
-        button.set_enabled(can_adjust)
-        button.render(rl.Rectangle(rect.x + rect.width * fraction - diameter / 2,
-                                   center_y - diameter / 2, diameter, diameter))
-
-      value = f"{self._fixed_steer_ratio:.1f}"
-      value_size = min(rect.height * 0.062, 64)
-      value_width = rl.measure_text_ex(self._font_bold, value, value_size, 0).x
-      value_pos = rl.Vector2(center_x - value_width / 2,
-                             center_y - value_size * 0.55)
-      rl.draw_text_ex(self._font_bold, value, value_pos, value_size, 0, rl.WHITE)
-      applied_ratio = float(ui_state.sm['vehicleParameters'].steerRatio)
-      ratio_applied = abs(applied_ratio - self._fixed_steer_ratio) < STEER_RATIO_STEP / 2
-      status = ("FIXED RATIO ACTIVE" if ratio_applied else "APPLYING FIXED RATIO") if can_adjust else "PARK TO CHANGE"
-      status_size = min(rect.height * 0.022, 24)
-      status_width = rl.measure_text_ex(self._font_medium, status, status_size, 0).x
-      rl.draw_text_ex(self._font_medium, status,
-                      rl.Vector2(center_x - status_width / 2,
-                                 center_y + diameter * 0.55),
-                      status_size, 0, COLORS.WHITE_TRANSLUCENT)
-
-    self._steer_ratio_toggle.render(toggle_rect)
+    # The Mici onroad view draws steer-ratio controls in its shared full-width
+    # touch bar so camera offset and steer ratio have the same visual layout.
+    return
 
   def is_steer_ratio_control_at(self, point) -> bool:
     if not self._steer_ratio_controls_visible:
       return False
     rect = self.rect
-    control_height = max(44.0, min(rect.height * 0.075, 74.0))
-    center_x = rect.x + rect.width * 0.78
-    toggle_width = min(rect.width * 0.28, control_height * 6.2)
-    toggle_rect = rl.Rectangle(center_x - toggle_width / 2,
-                               rect.y + rect.height * 0.89 - control_height / 2,
-                               toggle_width, control_height)
-    if rl.check_collision_point_rec(point, toggle_rect):
-      return True
-    if not self._steer_ratio_enabled:
-      return False
-    center_y = rect.y + rect.height * 0.73
-    for fraction in (0.68, 0.88):
-      button_rect = rl.Rectangle(rect.x + rect.width * fraction - control_height / 2,
-                                 center_y - control_height / 2, control_height, control_height)
-      if rl.check_collision_point_rec(point, button_rect):
-        return True
-    return False
+    bar_height = max(150.0, min(rect.height * 0.25, 220.0))
+    bar_rect = rl.Rectangle(rect.x, rect.y + (rect.height - bar_height) / 2,
+                            rect.width, bar_height)
+    return rl.check_collision_point_rec(point, bar_rect)
 
   def _draw_model_source(self, rect: rl.Rectangle) -> None:
     if ui_state.sm.recv_frame['selfdriveState'] < ui_state.started_frame:
