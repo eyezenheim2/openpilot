@@ -11,7 +11,6 @@ from openpilot.selfdrive.ui.mici.onroad.driver_state import DriverStateRenderer
 from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.mici.onroad.model_renderer import ModelRenderer
 from openpilot.selfdrive.ui.mici.onroad.confidence_ball import ConfidenceBall
-from openpilot.selfdrive.ui.mici.onroad.stock_confidence_ball import ConfidenceBall as StockConfidenceBall
 from openpilot.selfdrive.ui.mici.onroad.cameraview import CameraView
 from openpilot.system.ui.lib.application import FontWeight, gui_app, MousePos, MouseEvent, TextAlignment, TextAlignmentVertical
 from openpilot.system.ui.widgets.label import UnifiedLabel
@@ -25,6 +24,13 @@ if gui_app.sunnypilot_ui():
   from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_renderer import HudRendererSP as HudRenderer
   from openpilot.selfdrive.ui.sunnypilot.ui_state import OnroadTimerStatus
 from openpilot.selfdrive.ui.mici.onroad.brake_pressure_ball import BrakePressureBall
+
+try:
+  from openpilot.selfdrive.ui.mici.onroad.stock_confidence_ball import ConfidenceBall as StockConfidenceBall
+except ImportError:
+  # The legacy side confidence dot is optional; keep the Mici HUD bootable
+  # on installs that don't include its separate renderer module.
+  StockConfidenceBall = ConfidenceBall
 
 OpState = log.SelfdriveState.OpenpilotState
 CALIBRATED = log.ExtrinsicsCalibration.Status.calibrated
