@@ -18,6 +18,7 @@ from openpilot.selfdrive.ui.sunnypilot.mici.onroad.model_renderer import LANE_LI
 CLIP_MARGIN = 500
 MIN_DRAW_DISTANCE = 10.0
 MAX_DRAW_DISTANCE = 100.0
+LEAD_TUNNEL_SPEED = 0.45
 
 THROTTLE_COLORS = [
   rl.Color(13, 248, 122, 102),   # HSLF(148/360, 0.94, 0.51, 0.4)
@@ -63,6 +64,7 @@ class ModelRenderer(Widget, ModelRendererSP):
     self._lane_line_probs = np.zeros(4, dtype=np.float32)
     self._road_edge_stds = np.zeros(2, dtype=np.float32)
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
+    self._lead_indicator_ready = False
     self._path_offset_z = HEIGHT_INIT[0]
 
     # Initialize ModelPoints objects
@@ -102,6 +104,8 @@ class ModelRenderer(Widget, ModelRendererSP):
     self._transform_dirty = True
 
   def _render(self, rect: rl.Rectangle):
+    # Reset before any early return so an old marker cannot persist.
+    self._lead_indicator_ready = False
     sm = ui_state.sm
 
     if self._counter % 180 == 0:  # This runs at 60fps, so we query every 3 seconds
@@ -154,8 +158,8 @@ class ModelRenderer(Widget, ModelRendererSP):
       self._draw_lane_lines()
       self._draw_path(sm)
 
-    # if render_lead_indicator and radar_state:
-    #   self._draw_lead_indicator()
+    # AugmentedRoadView draws the marker after the opaque clock face.
+    self._lead_indicator_ready = bool(render_lead_indicator)
 
   def _update_raw_points(self, model):
     """Update raw 3D points from model data"""
@@ -374,14 +378,34 @@ class ModelRenderer(Widget, ModelRendererSP):
       else:
         draw_polygon(self._rect, path_pts, gradient=gradient)
 
-  def _draw_lead_indicator(self):
-    # Draw lead vehicles if available
-    for lead in self._lead_vehicles:
-      if not lead.glow or not lead.chevron:
-        continue
+  def draw_lead_indicator(self):
+    """Draw after the clock, before driver monitoring, HUD, and alerts."""
+    sm = ui_state.sm
+    if (not ui_state.started or not self._lead_indicator_ready or
+        not sm.seen['radarState'] or not sm.valid['radarState'] or
+        not sm.alive['radarState'] or
+        sm.recv_frame['radarState'] <= ui_state.started_frame):
+      return
+    self._draw_lead_indicator()
 
-      rl.draw_triangle_fan(lead.glow, len(lead.glow), rl.Color(218, 202, 37, 255))
-      rl.draw_triangle_fan(lead.chevron, len(lead.chevron), rl.Color(201, 34, 49, lead.fill_alpha))
+  def _draw_lead_indicator(self):
+    # Import lazily to avoid a UI startup cycle through augmented_road_view.
+    from openpilot.selfdrive.ui.mici.onroad.confidence_ball import ConfidenceBall
+
+    # Preserve the existing marker's position and distance-dependent size.
+    # Time advances on every display frame, even between model updates.
+    phase = (rl.get_time() * LEAD_TUNNEL_SPEED) % 1.0
+    for lead in self._lead_vehicles:
+      if not lead.chevron:
+        continue
+      xs, ys = zip(*lead.chevron)
+      size = max(xs) - min(xs)
+      if size <= 0:
+        continue
+      cx = self._rect.x + (min(xs) + max(xs)) / 2
+      cy = self._rect.y + (min(ys) + max(ys)) / 2
+      panel = rl.Rectangle(cx - size / 2, cy - size / 2, size, size)
+      ConfidenceBall._draw_lead_tunnel(panel, phase, 1.0)
 
   @staticmethod
   def _get_path_length_idx(pos_x_array: np.ndarray, path_height: float) -> int:
