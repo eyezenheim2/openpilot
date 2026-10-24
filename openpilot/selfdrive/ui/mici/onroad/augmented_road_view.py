@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import pyray as rl
 from openpilot.cereal import log
@@ -23,7 +24,59 @@ from enum import IntEnum
 if gui_app.sunnypilot_ui():
   from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_renderer import HudRendererSP as HudRenderer
   from openpilot.selfdrive.ui.sunnypilot.ui_state import OnroadTimerStatus
-from openpilot.selfdrive.ui.mici.onroad.brake_pressure_ball import BrakePressureBall
+try:
+  from openpilot.selfdrive.ui.mici.onroad.brake_pressure_ball import BrakePressureBall
+except ImportError:
+  class BrakePressureBall:
+    @staticmethod
+    def brake_percent() -> int:
+      accel = float(ui_state.sm["carControl"].actuators.accel)
+      if not math.isfinite(accel):
+        return 0
+      return round(max(0.0, min(1.0, -accel / 4.0)) * 100)
+
+    def render_at(self, center_x: float, center_y: float, radius: float, percent: int,
+                  show_readout: bool = True) -> None:
+      percent = max(0, min(100, percent))
+      if percent <= 0:
+        return
+
+      center = rl.Vector2(center_x, center_y)
+      inner_radius, outer_radius = radius * 0.82, radius * 0.98
+      track_color = rl.Color(105, 105, 105, 255)
+      brake_color = rl.Color(255, 35, 75, 255)
+      rl.draw_circle_v(center, radius + 5, rl.Color(45, 45, 45, 255))
+      rl.draw_ring(center, inner_radius, outer_radius, 0, 360, 96, track_color)
+
+      end_angle = -90 + 360 * percent / 100
+      rl.draw_ring(center, inner_radius, outer_radius, -90, end_angle,
+                   max(2, round(96 * percent / 100)), brake_color)
+      cap_radius = (outer_radius - inner_radius) / 2
+      cap_distance = (outer_radius + inner_radius) / 2
+      cap_angle = math.radians(end_angle)
+      rl.draw_circle_v(rl.Vector2(center_x + math.cos(cap_angle) * cap_distance,
+                                  center_y + math.sin(cap_angle) * cap_distance),
+                       cap_radius, brake_color)
+      rl.draw_circle_v(center, radius * 0.76, rl.Color(28, 28, 28, 255))
+      if not show_readout:
+        return
+
+      value, font_size = f"{percent}%", radius * 0.58
+      font = gui_app.font(FontWeight.DISPLAY)
+      value_size = rl.measure_text_ex(font, value, font_size, 0)
+      label, label_size = "BRAKE", radius * 0.16
+      label_font = gui_app.font(FontWeight.SEMI_BOLD)
+      label_measured = rl.measure_text_ex(label_font, label, label_size, 0)
+      gap = radius * 0.06
+      group_top = center_y - (value_size.y + gap + label_measured.y) / 2
+      value_pos = rl.Vector2(center_x - value_size.x / 2, group_top)
+      rl.draw_text_ex(font, value, rl.Vector2(value_pos.x + 2, value_pos.y + 2),
+                      font_size, 0, rl.BLACK)
+      rl.draw_text_ex(font, value, value_pos, font_size, 0, rl.WHITE)
+      label_pos = rl.Vector2(center_x - label_measured.x / 2,
+                             group_top + value_size.y + gap)
+      rl.draw_text_ex(label_font, label, label_pos, label_size,
+                      0, rl.Color(185, 190, 200, 230))
 
 try:
   from openpilot.selfdrive.ui.mici.onroad.stock_confidence_ball import ConfidenceBall as StockConfidenceBall
@@ -357,43 +410,8 @@ class AugmentedRoadView(CameraView):
       super()._handle_mouse_release(mouse_pos)
       return
 
-    # Double-tap the bottom labels to open each adjustment panel.
-    label = self._bottom_label_at(mouse_pos)
-    if label is not None:
-      self._last_screen_tap = None
-      last_tap = self._last_bottom_label_tap
-      is_double_tap = (last_tap is not None and last_tap[0] == label and
-                       now - last_tap[1] <= HUD_DOUBLE_TAP_SECONDS)
-      if is_double_tap:
-        self._last_bottom_label_tap = None
-        self._speedometer_visible = False
-        if label == "camera":
-          self._steer_ratio_controls_until = 0.0
-          self._camera_offset_value = float(ui_state.params.get('CameraOffset', return_default=True))
-          self._offset_controls_until = now + 5.0
-        else:
-          self._offset_controls_until = 0.0
-          self._steer_ratio_controls_until = now + 5.0
-      else:
-        self._last_bottom_label_tap = (label, now)
-      return
-
     self._last_bottom_label_tap = None
-    # A screen double-tap opens steer-ratio controls. While camera-offset
-    # controls are open, single taps continue to adjust their left/right values.
-    if self._offset_press_active and ui_state.active_bundle is not None:
-      self._last_screen_tap = None
-      midpoint = self.rect.x + (self.rect.width - SIDE_PANEL_WIDTH) / 2
-      step = -0.01 if mouse_pos.x < midpoint else 0.01
-      value = float(ui_state.params.get('CameraOffset', return_default=True))
-      value = round(max(-0.35, min(0.35, value + step)), 2)
-      ui_state.params.put('CameraOffset', value)
-      self._camera_offset_value = value
-      self._model_renderer._camera_offset = value
-      self._model_renderer._transform_dirty = True
-      self._offset_controls_until = now + 5.0
-      return
-
+    # A double-tap anywhere switches from the camera-offset bar to steer ratio.
     last_tap = self._last_screen_tap
     is_screen_double_tap = (
       last_tap is not None and
@@ -405,8 +423,28 @@ class AugmentedRoadView(CameraView):
       self._offset_controls_until = 0.0
       self._steer_ratio_controls_until = now + 5.0
       self._speedometer_visible = False
-    else:
+      return
+
+    # While the camera-offset bar is open, a single tap adjusts left or right.
+    if self._offset_press_active and ui_state.active_bundle is not None:
+      midpoint = self.rect.x + (self.rect.width - SIDE_PANEL_WIDTH) / 2
+      step = -0.01 if mouse_pos.x < midpoint else 0.01
+      value = float(ui_state.params.get('CameraOffset', return_default=True))
+      value = round(max(-0.35, min(0.35, value + step)), 2)
+      ui_state.params.put('CameraOffset', value)
+      self._camera_offset_value = value
+      self._model_renderer._camera_offset = value
+      self._model_renderer._transform_dirty = True
+      self._offset_controls_until = now + 5.0
       self._last_screen_tap = (now, mouse_pos.x, mouse_pos.y)
+      return
+
+    # A single tap anywhere opens the full-width camera-offset bar.
+    self._last_screen_tap = (now, mouse_pos.x, mouse_pos.y)
+    self._steer_ratio_controls_until = 0.0
+    self._camera_offset_value = float(ui_state.params.get('CameraOffset', return_default=True))
+    self._offset_controls_until = now + 5.0
+    self._speedometer_visible = False
 
   def _draw_touch_controls(self):
     now = rl.get_time()
@@ -435,17 +473,23 @@ class AugmentedRoadView(CameraView):
     height = max(150.0, CAMERA_OFFSET_VALUE_FONT_SIZE + 32, CAMERA_OFFSET_SYMBOL_FONT_SIZE + 32)
     top = rect.y + (rect.height - height) / 2
     rl.draw_rectangle_rec(rl.Rectangle(rect.x, top, rect.width, height), rl.BLACK)
-    value = self._camera_offset_value
-    value = 0.0 if abs(value) < 0.005 else value
-    for label, fraction, size in (
-      ('-', 0.18, CAMERA_OFFSET_SYMBOL_FONT_SIZE),
-      (f'{value:.2f}', 0.50, CAMERA_OFFSET_VALUE_FONT_SIZE),
-      ('+', 0.82, CAMERA_OFFSET_SYMBOL_FONT_SIZE),
-    ):
-      measured = rl.measure_text_ex(font, label, size, 0)
-      pos = rl.Vector2(rect.x + rect.width * fraction - measured.x / 2,
-                       top + (height - measured.y) / 2)
-      rl.draw_text_ex(font, label, pos, size, 0, color)
+    value = 0.0 if abs(self._camera_offset_value) < 0.005 else self._camera_offset_value
+    value_text = f'{value:.2f}'
+    value_size = rl.measure_text_ex(font, value_text, CAMERA_OFFSET_VALUE_FONT_SIZE, 0)
+    value_pos = rl.Vector2(rect.x + rect.width * 0.50 - value_size.x / 2,
+                           top + (height - value_size.y) / 2)
+    rl.draw_text_ex(font, value_text, value_pos, CAMERA_OFFSET_VALUE_FONT_SIZE, 0, color)
+
+    arrow_size = min(74.0, height * 0.42)
+    arrow_y = top + height / 2
+    arrow_color = rl.Color(0, 220, 80, 255)
+    left_x, right_x = rect.x + rect.width * 0.28, rect.x + rect.width * 0.72
+    rl.draw_triangle(rl.Vector2(left_x - arrow_size / 2, arrow_y),
+                     rl.Vector2(left_x + arrow_size / 2, arrow_y - arrow_size / 2),
+                     rl.Vector2(left_x + arrow_size / 2, arrow_y + arrow_size / 2), arrow_color)
+    rl.draw_triangle(rl.Vector2(right_x + arrow_size / 2, arrow_y),
+                     rl.Vector2(right_x - arrow_size / 2, arrow_y - arrow_size / 2),
+                     rl.Vector2(right_x - arrow_size / 2, arrow_y + arrow_size / 2), arrow_color)
 
   def _draw_speedometer(self):
     if not self._speedometer_visible:
