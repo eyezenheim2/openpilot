@@ -1,15 +1,13 @@
 import colorsys
 import numpy as np
 import pyray as rl
-from openpilot.cereal import messaging
-from opendbc.car.structs import car
+from cereal import messaging, car
 from dataclasses import dataclass, field
 from openpilot.common.params import Params
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.mici.onroad import blend_colors
-from openpilot.selfdrive.ui.mici.onroad.confidence_ball import ConfidenceBall, LEAD_TUNNEL_SPEED
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.shader_polygon import draw_polygon, Gradient
 from openpilot.system.ui.widgets import Widget
@@ -48,8 +46,8 @@ class ModelPoints:
 
 @dataclass
 class LeadVehicle:
-  glow: list[tuple[float, float]] = field(default_factory=list)
-  chevron: list[tuple[float, float]] = field(default_factory=list)
+  glow: list[float] = field(default_factory=list)
+  chevron: list[float] = field(default_factory=list)
   fill_alpha: int = 0
 
 
@@ -64,7 +62,6 @@ class ModelRenderer(Widget, ModelRendererSP):
     self._lane_line_probs = np.zeros(4, dtype=np.float32)
     self._road_edge_stds = np.zeros(2, dtype=np.float32)
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
-    self._lead_indicator_ready = False
     self._path_offset_z = HEIGHT_INIT[0]
 
     # Initialize ModelPoints objects
@@ -104,8 +101,6 @@ class ModelRenderer(Widget, ModelRendererSP):
     self._transform_dirty = True
 
   def _render(self, rect: rl.Rectangle):
-    # Reset before any early return so an old marker cannot persist.
-    self._lead_indicator_ready = False
     sm = ui_state.sm
 
     if self._counter % 180 == 0:  # This runs at 60fps, so we query every 3 seconds
@@ -115,7 +110,7 @@ class ModelRenderer(Widget, ModelRendererSP):
     self._torque_filter.update(-ui_state.sm['carOutput'].actuatorsOutput.torque)
 
     # Check if data is up-to-date
-    if (sm.recv_frame["extrinsicsCalibration"] < ui_state.started_frame or
+    if (sm.recv_frame["liveCalibration"] < ui_state.started_frame or
         sm.recv_frame["modelV2"] < ui_state.started_frame):
       return
 
@@ -127,8 +122,8 @@ class ModelRenderer(Widget, ModelRendererSP):
     # Update state
     self._experimental_mode = sm['selfdriveState'].experimentalMode
 
-    extrinsics_calibration = sm['extrinsicsCalibration']
-    self._path_offset_z = extrinsics_calibration.height[0] if extrinsics_calibration.height else HEIGHT_INIT[0]
+    live_calib = sm['liveCalibration']
+    self._path_offset_z = live_calib.height[0] if live_calib.height else HEIGHT_INIT[0]
 
     if sm.updated['carParams']:
       self._longitudinal_control = sm['carParams'].openpilotLongitudinalControl
@@ -158,8 +153,8 @@ class ModelRenderer(Widget, ModelRendererSP):
       self._draw_lane_lines()
       self._draw_path(sm)
 
-    # AugmentedRoadView draws the marker after the opaque clock face.
-    self._lead_indicator_ready = bool(render_lead_indicator)
+    # if render_lead_indicator and radar_state:
+    #   self._draw_lead_indicator()
 
   def _update_raw_points(self, model):
     """Update raw 3D points from model data"""
@@ -181,7 +176,7 @@ class ModelRenderer(Widget, ModelRendererSP):
     leads = [radar_state.leadOne, radar_state.leadTwo]
 
     for i, lead_data in enumerate(leads):
-      if lead_data and lead_data.present:
+      if lead_data and lead_data.status:
         d_rel, y_rel, v_rel = lead_data.dRel, lead_data.yRel, lead_data.vRel
         idx = self._get_path_length_idx(path_x_array, d_rel)
 
@@ -210,7 +205,7 @@ class ModelRenderer(Widget, ModelRendererSP):
       road_edge.projected_points = self._map_line_to_polygon(road_edge.raw_points, line_width_factor, 0.0, max_idx)
 
     # Update path using raw points
-    if lead and lead.present:
+    if lead and lead.status:
       lead_d = lead.dRel * 2.0
       max_distance = np.clip(lead_d - min(lead_d * 0.35, 10.0), 0.0, max_distance)
 
@@ -378,31 +373,14 @@ class ModelRenderer(Widget, ModelRendererSP):
       else:
         draw_polygon(self._rect, path_pts, gradient=gradient)
 
-  def draw_lead_indicator(self):
-    """Draw after the clock, before driver monitoring, HUD, and alerts."""
-    sm = ui_state.sm
-    if (not ui_state.started or not self._lead_indicator_ready or
-        not sm.seen['radarState'] or not sm.valid['radarState'] or
-        not sm.alive['radarState'] or
-        sm.recv_frame['radarState'] <= ui_state.started_frame):
-      return
-    self._draw_lead_indicator()
-
   def _draw_lead_indicator(self):
-    # Preserve the existing marker's position and distance-dependent size.
-    # Time advances on every display frame, even between model updates.
-    phase = (rl.get_time() * LEAD_TUNNEL_SPEED) % 1.0
+    # Draw lead vehicles if available
     for lead in self._lead_vehicles:
-      if not lead.chevron:
+      if not lead.glow or not lead.chevron:
         continue
-      xs, ys = zip(*lead.chevron)
-      size = max(xs) - min(xs)
-      if size <= 0:
-        continue
-      cx = self._rect.x + (min(xs) + max(xs)) / 2
-      cy = self._rect.y + (min(ys) + max(ys)) / 2
-      panel = rl.Rectangle(cx - size / 2, cy - size / 2, size, size)
-      ConfidenceBall._draw_lead_tunnel(panel, phase, 1.0)
+
+      rl.draw_triangle_fan(lead.glow, len(lead.glow), rl.Color(218, 202, 37, 255))
+      rl.draw_triangle_fan(lead.chevron, len(lead.chevron), rl.Color(201, 34, 49, lead.fill_alpha))
 
   @staticmethod
   def _get_path_length_idx(pos_x_array: np.ndarray, path_height: float) -> int:
