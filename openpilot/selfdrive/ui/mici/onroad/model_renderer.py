@@ -1,498 +1,295 @@
-import colorsys
-import numpy as np
 import pyray as rl
-from cereal import messaging, car
-from dataclasses import dataclass, field
-from openpilot.common.params import Params
-from openpilot.common.filter_simple import FirstOrderFilter
-from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
+from dataclasses import dataclass
+from openpilot.common.constants import CV
+from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
-from openpilot.selfdrive.ui.mici.onroad import blend_colors
-from openpilot.system.ui.lib.application import gui_app
-from openpilot.system.ui.lib.shader_polygon import draw_polygon, Gradient
+from openpilot.system.ui.lib.application import gui_app, FontWeight
+from openpilot.system.ui.lib.multilang import tr
+from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
+from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.cereal import log
 
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.model_renderer import LANE_LINE_COLORS_SP, ModelRendererSP
+EventName = log.OnroadEvent.EventName
 
-CLIP_MARGIN = 500
-MIN_DRAW_DISTANCE = 10.0
-MAX_DRAW_DISTANCE = 100.0
+# Constants
+SET_SPEED_NA = 255
+KM_TO_MILE = 0.621371
+CRUISE_DISABLED_CHAR = '–'
 
-THROTTLE_COLORS = [
-  rl.Color(13, 248, 122, 102),   # HSLF(148/360, 0.94, 0.51, 0.4)
-  rl.Color(114, 255, 92, 89),    # HSLF(112/360, 1.0, 0.68, 0.35)
-  rl.Color(114, 255, 92, 0),     # HSLF(112/360, 1.0, 0.68, 0.0)
-]
+SET_SPEED_PERSISTENCE = 2.5  # seconds
 
-NO_THROTTLE_COLORS = [
-  rl.Color(242, 242, 242, 102), # HSLF(148/360, 0.0, 0.95, 0.4)
-  rl.Color(242, 242, 242, 89),  # HSLF(112/360, 0.0, 0.95, 0.35)
-  rl.Color(242, 242, 242, 0),   # HSLF(112/360, 0.0, 0.95, 0.0)
-]
-
-LANE_LINE_COLORS = {
-  UIStatus.DISENGAGED: rl.Color(200, 200, 200, 255),
-  UIStatus.OVERRIDE: rl.Color(255, 255, 255, 255),
-  UIStatus.ENGAGED: rl.Color(0, 255, 64, 255),
-  **LANE_LINE_COLORS_SP,
-}
+# Adjust this value to resize the centered speedometer. 1.0 is the original
+# design size; for example, use 0.8 for smaller or 1.25 for larger.
+SPEEDOMETER_SCALE = 1.0
+SPEEDOMETER_Y_OFFSET = -1 # positive = down, negative = up
+SPEEDOMETER_X_OFFSET = 25  # positive = right, negative = left
 
 
-@dataclass
-class ModelPoints:
-  raw_points: np.ndarray = field(default_factory=lambda: np.empty((0, 3), dtype=np.float32))
-  projected_points: np.ndarray = field(default_factory=lambda: np.empty((0, 2), dtype=np.float32))
+@dataclass(frozen=True)
+class FontSizes:
+  current_speed: int = 215
+  speed_unit: int = 1
+  max_speed: int = 1
+  set_speed: int = 11
 
 
-@dataclass
-class LeadVehicle:
-  glow: list[float] = field(default_factory=list)
-  chevron: list[float] = field(default_factory=list)
-  fill_alpha: int = 0
+@dataclass(frozen=True)
+class Colors:
+  WHITE = rl.WHITE
+  WHITE_TRANSLUCENT = rl.Color(255, 255, 255, 200)
 
 
-class ModelRenderer(Widget, ModelRendererSP):
+FONT_SIZES = FontSizes()
+COLORS = Colors()
+
+
+class TurnIntent(Widget):
+  FADE_IN_ANGLE = 30  # degrees
+
   def __init__(self):
-    Widget.__init__(self)
-    ModelRendererSP.__init__(self)
-    self._longitudinal_control = False
-    self._experimental_mode = False
-    self._blend_filter = FirstOrderFilter(1.0, 0.25, 1 / gui_app.target_fps)
-    self._prev_allow_throttle = True
-    self._lane_line_probs = np.zeros(4, dtype=np.float32)
-    self._road_edge_stds = np.zeros(2, dtype=np.float32)
-    self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
-    self._path_offset_z = HEIGHT_INIT[0]
+    super().__init__()
+    self._pre = False
+    self._turn_intent_direction: int = 0
 
-    # Initialize ModelPoints objects
-    self._path = ModelPoints()
-    self._lane_lines = [ModelPoints() for _ in range(4)]
-    self._road_edges = [ModelPoints() for _ in range(2)]
-    self._acceleration_x = np.empty((0,), dtype=np.float32)
+    self._turn_intent_alpha_filter = FirstOrderFilter(0, 0.05, 1 / gui_app.target_fps)
+    self._turn_intent_rotation_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
 
-    self._acceleration_x_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
-    self._acceleration_x_filter2 = FirstOrderFilter(0.0, 1, 1 / gui_app.target_fps)
+    self._txt_turn_intent_left: rl.Texture = gui_app.texture('icons_mici/turn_intent_left.png', 50, 20)
+    self._txt_turn_intent_right: rl.Texture = gui_app.texture('icons_mici/turn_intent_left.png', 50, 20, flip_x=True)
 
-    self._torque_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
-    self._ll_color_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
+  def _render(self, _):
+    if self._turn_intent_alpha_filter.x > 1e-2:
+      turn_intent_texture = self._txt_turn_intent_right if self._turn_intent_direction == 1 else self._txt_turn_intent_left
+      src_rect = rl.Rectangle(0, 0, turn_intent_texture.width, turn_intent_texture.height)
+      dest_rect = rl.Rectangle(self._rect.x + self._rect.width / 2, self._rect.y + self._rect.height / 2,
+                               turn_intent_texture.width, turn_intent_texture.height)
 
-    # 3x3 car space -> rect-origin space (draw methods add rect.x/y)
-    self._car_space_transform = np.zeros((3, 3), dtype=np.float32)
-    self._transform_dirty = True
-    self._clip_region = None
+      origin = (turn_intent_texture.width / 2, self._rect.height / 2)
+      color = rl.Color(255, 255, 255, int(255 * self._turn_intent_alpha_filter.x))
+      rl.draw_texture_pro(turn_intent_texture, src_rect, dest_rect, origin, self._turn_intent_rotation_filter.x, color)
 
-    self._counter = -1
-    self._camera_offset = ui_state.params.get("CameraOffset", return_default=True) if ui_state.active_bundle else 0.0
-
-    self._exp_gradient = Gradient(
-      start=(0.0, 1.0),  # Bottom of path
-      end=(0.0, 0.0),  # Top of path
-      colors=[],
-      stops=[],
-    )
-
-    # Get longitudinal control setting from car parameters
-    if car_params := Params().get("CarParams"):
-      cp = messaging.log_from_bytes(car_params, car.CarParams)
-      self._longitudinal_control = cp.openpilotLongitudinalControl
-
-  def set_transform(self, transform: np.ndarray):
-    self._car_space_transform = transform.astype(np.float32)
-    self._transform_dirty = True
-
-  def _render(self, rect: rl.Rectangle):
+  def _update_state(self) -> None:
     sm = ui_state.sm
 
-    if self._counter % 180 == 0:  # This runs at 60fps, so we query every 3 seconds
-      self._camera_offset = ui_state.params.get("CameraOffset", return_default=True) if ui_state.active_bundle else 0.0
-    self._counter += 1
+    left = any(e.name == EventName.preLaneChangeLeft for e in sm['onroadEvents'])
+    right = any(e.name == EventName.preLaneChangeRight for e in sm['onroadEvents'])
+    if left or right:
+      # pre lane change
+      if not self._pre:
+        self._turn_intent_rotation_filter.x = self.FADE_IN_ANGLE if left else -self.FADE_IN_ANGLE
 
-    self._torque_filter.update(-ui_state.sm['carOutput'].actuatorsOutput.torque)
+      self._pre = True
+      self._turn_intent_direction = -1 if left else 1
+      self._turn_intent_alpha_filter.update(1)
+      self._turn_intent_rotation_filter.update(0)
+    elif any(e.name == EventName.laneChange for e in sm['onroadEvents']):
+      # fade out and rotate away
+      self._pre = False
+      self._turn_intent_alpha_filter.update(0)
 
-    # Check if data is up-to-date
-    if (sm.recv_frame["liveCalibration"] < ui_state.started_frame or
-        sm.recv_frame["modelV2"] < ui_state.started_frame):
-      return
-
-    # Set up clipping region
-    self._clip_region = rl.Rectangle(
-      rect.x - CLIP_MARGIN, rect.y - CLIP_MARGIN, rect.width + 2 * CLIP_MARGIN, rect.height + 2 * CLIP_MARGIN
-    )
-
-    # Update state
-    self._experimental_mode = sm['selfdriveState'].experimentalMode
-
-    live_calib = sm['liveCalibration']
-    self._path_offset_z = live_calib.height[0] if live_calib.height else HEIGHT_INIT[0]
-
-    if sm.updated['carParams']:
-      self._longitudinal_control = sm['carParams'].openpilotLongitudinalControl
-
-    model = sm['modelV2']
-    radar_state = sm['radarState'] if sm.valid['radarState'] else None
-    lead_one = radar_state.leadOne if radar_state else None
-    render_lead_indicator = self._longitudinal_control and radar_state is not None
-
-    # Update model data when needed
-    model_updated = sm.updated['modelV2']
-    if model_updated or sm.updated['radarState'] or self._transform_dirty:
-      if model_updated:
-        self._update_raw_points(model)
-
-      path_x_array = self._path.raw_points[:, 0]
-      if path_x_array.size == 0:
-        return
-
-      self._update_model(lead_one, path_x_array)
-      if render_lead_indicator:
-        self._update_leads(radar_state, path_x_array)
-      self._transform_dirty = False
-
-    # Draw elements (hide when disengaged)
-    if ui_state.status != UIStatus.DISENGAGED:
-      self._draw_lane_lines()
-      self._draw_path(sm)
-
-    # if render_lead_indicator and radar_state:
-    #   self._draw_lead_indicator()
-
-  def _update_raw_points(self, model):
-    """Update raw 3D points from model data"""
-    self._path.raw_points = np.array([model.position.x, np.array(model.position.y) + self._camera_offset, model.position.z], dtype=np.float32).T
-
-    for i, lane_line in enumerate(model.laneLines):
-      self._lane_lines[i].raw_points = np.array([lane_line.x, np.array(lane_line.y) + self._camera_offset, lane_line.z], dtype=np.float32).T
-
-    for i, road_edge in enumerate(model.roadEdges):
-      self._road_edges[i].raw_points = np.array([road_edge.x, np.array(road_edge.y) + self._camera_offset, road_edge.z], dtype=np.float32).T
-
-    self._lane_line_probs = np.array(model.laneLineProbs, dtype=np.float32)
-    self._road_edge_stds = np.array(model.roadEdgeStds, dtype=np.float32)
-    self._acceleration_x = np.array(model.acceleration.x, dtype=np.float32)
-
-  def _update_leads(self, radar_state, path_x_array):
-    """Update positions of lead vehicles"""
-    self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
-    leads = [radar_state.leadOne, radar_state.leadTwo]
-
-    for i, lead_data in enumerate(leads):
-      if lead_data and lead_data.status:
-        d_rel, y_rel, v_rel = lead_data.dRel, lead_data.yRel, lead_data.vRel
-        idx = self._get_path_length_idx(path_x_array, d_rel)
-
-        # Get z-coordinate from path at the lead vehicle position
-        z = self._path.raw_points[idx, 2] if idx < len(self._path.raw_points) else 0.0
-        point = self._map_to_screen(d_rel, -y_rel + self._camera_offset, z + self._path_offset_z)
-        if point:
-          self._lead_vehicles[i] = self._update_lead_vehicle(d_rel, v_rel, point, self._rect)
-
-  def _update_model(self, lead, path_x_array):
-    """Update model visualization data based on model message"""
-    max_distance = np.clip(path_x_array[-1], MIN_DRAW_DISTANCE, MAX_DRAW_DISTANCE)
-    max_idx = self._get_path_length_idx(self._lane_lines[0].raw_points[:, 0], max_distance)
-
-    # Update lane lines using raw points
-    line_width_factor = 0.12
-    for i, lane_line in enumerate(self._lane_lines):
-      if i in (1, 2):
-        line_width_factor = 0.16
-      lane_line.projected_points = self._map_line_to_polygon(
-        lane_line.raw_points, line_width_factor * self._lane_line_probs[i], 0.0, max_idx
-      )
-
-    # Update road edges using raw points
-    for road_edge in self._road_edges:
-      road_edge.projected_points = self._map_line_to_polygon(road_edge.raw_points, line_width_factor, 0.0, max_idx)
-
-    # Update path using raw points
-    if lead and lead.status:
-      lead_d = lead.dRel * 2.0
-      max_distance = np.clip(lead_d - min(lead_d * 0.35, 10.0), 0.0, max_distance)
-
-    soon_acceleration = self._acceleration_x[len(self._acceleration_x) // 4] if len(self._acceleration_x) > 0 else 0
-    self._acceleration_x_filter.update(soon_acceleration)
-    self._acceleration_x_filter2.update(soon_acceleration)
-
-    # make path width wider/thinner when initially braking/accelerating
-    if self._experimental_mode and False:
-      high_pass_acceleration = self._acceleration_x_filter.x - self._acceleration_x_filter2.x
-      y_off = np.interp(high_pass_acceleration, [-1, 0, 1], [0.9 * 2, 0.9, 0.9 / 2])
-    else:
-      y_off = 0.9
-
-    max_idx = self._get_path_length_idx(path_x_array, max_distance)
-    self._path.projected_points = self._map_line_to_polygon(
-      self._path.raw_points, y_off, self._path_offset_z, max_idx, allow_invert=False
-    )
-
-    self._update_experimental_gradient()
-
-  def _update_experimental_gradient(self):
-    """Pre-calculate experimental mode gradient colors"""
-    if not self._experimental_mode:
-      return
-
-    path_pts = self._path.projected_points + np.array([self._rect.x, self._rect.y], dtype=np.float32)
-    max_len = min(len(path_pts) // 2, len(self._acceleration_x))
-
-    segment_colors = []
-    gradient_stops = []
-
-    i = 0
-    while i < max_len:
-      # Some points (screen space) are out of frame (rect space)
-      track_y = path_pts[i][1]
-      if track_y < self._rect.y or track_y > (self._rect.y + self._rect.height):
-        i += 1
-        continue
-
-      # Calculate color based on acceleration (0 is bottom, 1 is top)
-      lin_grad_point = 1 - (track_y - self._rect.y) / self._rect.height
-
-      # speed up: 120, slow down: 0
-      path_hue = np.clip(60 + self._acceleration_x[i] * 35, 0, 120)
-
-      saturation = min(abs(self._acceleration_x[i] * 1.5), 1)
-      lightness = np.interp(saturation, [0.0, 1.0], [0.95, 0.62])
-      alpha = np.interp(lin_grad_point, [0.75 / 2.0, 0.75], [0.4, 0.0])
-
-      # Use HSL to RGB conversion
-      color = self._hsla_to_color(path_hue / 360.0, saturation, lightness, alpha)
-
-      gradient_stops.append(lin_grad_point)
-      segment_colors.append(color)
-
-      # Skip a point, unless next is last
-      i += 1 + (1 if (i + 2) < max_len else 0)
-
-    # Store the gradient in the path object
-    self._exp_gradient.colors = segment_colors
-    self._exp_gradient.stops = gradient_stops
-
-  def _update_lead_vehicle(self, d_rel, v_rel, point, rect):
-    speed_buff, lead_buff = 10.0, 40.0
-
-    # Calculate fill alpha
-    fill_alpha = 0
-    if d_rel < lead_buff:
-      fill_alpha = 255 * (1.0 - (d_rel / lead_buff))
-      if v_rel < 0:
-        fill_alpha += 255 * (-1 * (v_rel / speed_buff))
-      fill_alpha = min(fill_alpha, 255)
-
-    # Calculate size and position
-    sz = np.clip((25 * 30) / (d_rel / 3 + 30), 15.0, 30.0) * 1
-    x = np.clip(point[0], 0.0, rect.width - sz / 2)
-    y = min(point[1], rect.height - sz * 0.6)
-
-    g_xo = sz / 5
-    g_yo = sz / 10
-
-    glow = [(x + (sz * 1.35) + g_xo, y + sz + g_yo), (x, y - g_yo), (x - (sz * 1.35) - g_xo, y + sz + g_yo)]
-    chevron = [(x + (sz * 1.25), y + sz), (x, y), (x - (sz * 1.25), y + sz)]
-
-    return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha))
-
-  def _get_ll_color(self, prob: float, adjacent: bool, left: bool):
-    alpha = np.clip(prob, 0.0, 0.7)
-    if adjacent:
-      _base_color = LANE_LINE_COLORS.get(ui_state.status, LANE_LINE_COLORS[UIStatus.DISENGAGED])
-      color = rl.Color(_base_color.r, _base_color.g, _base_color.b, int(alpha * 255))
-
-      # turn adjacent lls orange if torque is high
-      torque = self._torque_filter.x
-      high_torque = abs(torque) > 0.6
-      if high_torque and (left == (torque > 0)):
-        color = blend_colors(
-          color,
-          rl.Color(255, 115, 0, int(alpha * 255)),  # orange
-          np.interp(abs(torque), [0.6, 0.8], [0.0, 1.0])
-        )
-    else:
-      color = rl.Color(255, 255, 255, int(alpha * 255))
-
-    if ui_state.status == UIStatus.DISENGAGED:
-      color = rl.Color(0, 0, 0, int(alpha * 255))
-
-    return color
-
-  def _draw_lane_lines(self):
-    """Draw lane lines and road edges. Two closest lines should be green (lane line or road edges)."""
-    offset = np.array([self._rect.x, self._rect.y], dtype=np.float32)
-
-    for i, lane_line in enumerate(self._lane_lines):
-      if lane_line.projected_points.size == 0:
-        continue
-
-      color = self._get_ll_color(float(self._lane_line_probs[i]), i in (1, 2), i in (0, 1))
-      draw_polygon(self._rect, lane_line.projected_points + offset, color)
-
-    for i, road_edge in enumerate(self._road_edges):
-      if road_edge.projected_points.size == 0:
-        continue
-
-      # if closest lane lines are not confident, make road edges green
-      color = self._get_ll_color(float(1.0 - self._road_edge_stds[i]), float(self._lane_line_probs[i + 1]) < 0.25, i == 0)
-      draw_polygon(self._rect, road_edge.projected_points + offset, color)
-
-  def _draw_path(self, sm):
-    """Draw path with dynamic coloring based on mode and throttle state."""
-    if not self._path.projected_points.size:
-      return
-
-    allow_throttle = sm['longitudinalPlan'].allowThrottle or not self._longitudinal_control
-    self._blend_filter.update(int(allow_throttle))
-
-    if ui_state.rainbow_path:
-      self.rainbow_path.draw_rainbow_path(self._rect, self._path)
-      return
-
-    path_pts = self._path.projected_points + np.array([self._rect.x, self._rect.y], dtype=np.float32)
-
-    if self._experimental_mode:
-      # Draw with acceleration coloring
-      if ui_state.status == UIStatus.DISENGAGED:
-        draw_polygon(self._rect, path_pts, rl.Color(0, 0, 0, 90))
-      elif len(self._exp_gradient.colors) > 1:
-        draw_polygon(self._rect, path_pts, gradient=self._exp_gradient)
+      if self._turn_intent_direction == 0:
+        # unknown. missed pre frame?
+        self._turn_intent_rotation_filter.update(0)
       else:
-        draw_polygon(self._rect, path_pts, rl.Color(255, 255, 255, 30))
+        self._turn_intent_rotation_filter.update(self._turn_intent_direction * self.FADE_IN_ANGLE)
     else:
-      # Blend throttle/no throttle colors based on transition
-      blend_factor = round(self._blend_filter.x * 100) / 100
-      blended_colors = self._blend_colors(NO_THROTTLE_COLORS, THROTTLE_COLORS, blend_factor)
-      gradient = Gradient(
-        start=(0.0, 1.0),  # Bottom of path
-        end=(0.0, 0.0),  # Top of path
-        colors=blended_colors,
-        stops=[0.0, 0.5, 1.0],
-      )
+      # didn't complete lane change, just hide
+      self._pre = False
+      self._turn_intent_direction = 0
+      self._turn_intent_alpha_filter.update(0)
+      self._turn_intent_rotation_filter.update(0)
 
-      if ui_state.status == UIStatus.DISENGAGED:
-        draw_polygon(self._rect, path_pts, rl.Color(0, 0, 0, 90))
+
+class HudRenderer(Widget):
+  def __init__(self):
+    super().__init__()
+    """Initialize the HUD renderer."""
+    self.is_cruise_set: bool = False
+    self.is_cruise_available: bool = True
+    self.set_speed: float = SET_SPEED_NA
+    self._set_speed_changed_time: float = 0
+    self.speed: float = 0.0
+    self.v_ego_cluster_seen: bool = False
+    self._engaged: bool = False
+
+    self._can_draw_top_icons = True
+    self._show_wheel_critical = False
+
+    self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
+    self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
+    self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
+    self._font_display: rl.Font = gui_app.font(FontWeight.DISPLAY)
+
+    self._turn_intent = TurnIntent()
+    self._torque_bar = TorqueBar()
+
+    self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/wheel.png', 50, 50)
+    self._txt_wheel_critical: rl.Texture = gui_app.texture('icons_mici/wheel_critical.png', 50, 50)
+    self._txt_exclamation_point: rl.Texture = gui_app.texture('icons_mici/exclamation_point.png', 9, 44)
+
+    self._wheel_alpha_filter = FirstOrderFilter(0, 0.05, 1 / gui_app.target_fps)
+    self._wheel_y_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
+
+    self._set_speed_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
+
+  def set_wheel_critical_icon(self, critical: bool):
+    """Set the wheel icon to critical or normal state."""
+    self._show_wheel_critical = critical
+
+  def set_can_draw_top_icons(self, can_draw_top_icons: bool):
+    """Set whether to draw the top part of the HUD."""
+    self._can_draw_top_icons = can_draw_top_icons
+
+  def drawing_top_icons(self) -> bool:
+    # whether we're drawing any top icons currently
+    return bool(self._set_speed_alpha_filter.x > 1e-2)
+
+  def _update_state(self) -> None:
+    """Update HUD state based on car state and controls state."""
+    sm = ui_state.sm
+    if sm.recv_frame["carState"] < ui_state.started_frame:
+      self.is_cruise_set = False
+      self.set_speed = SET_SPEED_NA
+      self.speed = 0.0
+      return
+
+    controls_state = sm['controlsState']
+    car_state = sm['carState']
+
+    v_cruise_cluster = car_state.vCruiseCluster
+    set_speed = (
+      controls_state.deprecated.vCruise if v_cruise_cluster == 0.0 else v_cruise_cluster
+    )
+    engaged = sm['selfdriveState'].enabled
+    if (set_speed != self.set_speed and engaged) or (engaged and not self._engaged):
+      self._set_speed_changed_time = rl.get_time()
+    self._engaged = engaged
+    self.set_speed = set_speed
+    self.is_cruise_set = 0 < self.set_speed < SET_SPEED_NA
+    self.is_cruise_available = self.set_speed != -1
+
+    v_ego_cluster = car_state.vEgoCluster
+    self.v_ego_cluster_seen = self.v_ego_cluster_seen or v_ego_cluster != 0.0
+    v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
+    speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
+    self.speed = max(0.0, v_ego * speed_conversion)
+
+  def _render(self, rect: rl.Rectangle) -> None:
+    """Render HUD elements to the screen."""
+
+    self._torque_bar.render(rect)
+    self._draw_current_speed(rect)
+
+    if self.is_cruise_set:
+      self._draw_set_speed(rect)
+
+    self._draw_steering_wheel(rect)
+
+  def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
+    wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel
+
+    bsm_detected = self._has_blind_spot_detected() if gui_app.sunnypilot_ui() else False
+
+    if self._show_wheel_critical:
+      self._wheel_alpha_filter.update(255)
+      self._wheel_y_filter.update(0)
+    else:
+      if ui_state.status == UIStatus.DISENGAGED or bsm_detected:
+        self._wheel_alpha_filter.update(0)
+        self._wheel_y_filter.update(wheel_txt.height / 2)
       else:
-        draw_polygon(self._rect, path_pts, gradient=gradient)
+        self._wheel_alpha_filter.update(255 * 0.9)
+        self._wheel_y_filter.update(0)
 
-  def _draw_lead_indicator(self):
-    # Draw lead vehicles if available
-    for lead in self._lead_vehicles:
-      if not lead.glow or not lead.chevron:
-        continue
+    # pos
+    pos_x = int(rect.x + 21 + wheel_txt.width / 2)
+    pos_y = int(rect.y + rect.height - 14 - wheel_txt.height / 2 + self._wheel_y_filter.x)
+    rotation = -ui_state.sm['carState'].steeringAngleDeg
 
-      rl.draw_triangle_fan(lead.glow, len(lead.glow), rl.Color(218, 202, 37, 255))
-      rl.draw_triangle_fan(lead.chevron, len(lead.chevron), rl.Color(201, 34, 49, lead.fill_alpha))
+    turn_intent_margin = 25
+    self._turn_intent.render(rl.Rectangle(
+      pos_x - wheel_txt.width / 2 - turn_intent_margin,
+      pos_y - wheel_txt.height / 2 - turn_intent_margin,
+      wheel_txt.width + turn_intent_margin * 2,
+      wheel_txt.height + turn_intent_margin * 2,
+    ))
 
-  @staticmethod
-  def _get_path_length_idx(pos_x_array: np.ndarray, path_height: float) -> int:
-    """Get the index corresponding to the given path height"""
-    if len(pos_x_array) == 0:
-      return 0
-    indices = np.where(pos_x_array <= path_height)[0]
-    return indices[-1] if indices.size > 0 else 0
+    src_rect = rl.Rectangle(0, 0, wheel_txt.width, wheel_txt.height)
+    dest_rect = rl.Rectangle(pos_x, pos_y, wheel_txt.width, wheel_txt.height)
+    origin = (wheel_txt.width / 2, wheel_txt.height / 2)
 
-  def _map_to_screen(self, in_x, in_y, in_z):
-    """Project a point in car space to screen space"""
-    input_pt = np.array([in_x, in_y, in_z])
-    pt = self._car_space_transform @ input_pt
+    # color and draw
+    color = rl.Color(255, 255, 255, int(self._wheel_alpha_filter.x))
+    rl.draw_texture_pro(wheel_txt, src_rect, dest_rect, origin, rotation, color)
 
-    if abs(pt[2]) < 1e-6:
-      return None
+    if self._show_wheel_critical:
+      # Draw exclamation point icon
+      EXCLAMATION_POINT_SPACING = 10
+      exclamation_pos_x = pos_x - self._txt_exclamation_point.width / 2 + wheel_txt.width / 2 + EXCLAMATION_POINT_SPACING
+      exclamation_pos_y = pos_y - self._txt_exclamation_point.height / 2
+      rl.draw_texture_ex(self._txt_exclamation_point, rl.Vector2(exclamation_pos_x, exclamation_pos_y), 0.0, 1.0, rl.WHITE)
 
-    x, y = pt[0] / pt[2], pt[1] / pt[2]
+  def _draw_set_speed(self, rect: rl.Rectangle) -> None:
+    """Draw the MAX speed indicator box."""
+    alpha = self._set_speed_alpha_filter.update(0 < rl.get_time() - self._set_speed_changed_time < SET_SPEED_PERSISTENCE and
+                                                self._can_draw_top_icons and self._engaged)
+    if alpha < 1e-2:
+      return
 
-    clip = self._clip_region
-    if not (clip.x <= x <= clip.x + clip.width and clip.y <= y <= clip.y + clip.height):
-      return None
+    x = rect.x
+    y = rect.y
 
-    return (x, y)
+    # draw drop shadow
+    circle_radius = 162 // 2
+    rl.draw_circle_gradient(rl.Vector2(x + circle_radius, y + circle_radius), circle_radius,
+                            rl.Color(0, 0, 0, int(255 / 2 * alpha)), rl.BLANK)
 
-  def _map_line_to_polygon(self, line: np.ndarray, y_off: float, z_off: float, max_idx: int, allow_invert: bool = True) -> np.ndarray:
-    """Convert 3D line to 2D polygon for rendering."""
-    if line.shape[0] == 0:
-      return np.empty((0, 2), dtype=np.float32)
+    set_speed_color = rl.Color(255, 255, 255, int(255 * 0.9 * alpha))
+    max_color = rl.Color(255, 255, 255, int(255 * 0.9 * alpha))
 
-    # Slice points and filter non-negative x-coordinates
-    points = line[:max_idx + 1]
-    points = points[points[:, 0] >= 0]
-    if points.shape[0] == 0:
-      return np.empty((0, 2), dtype=np.float32)
+    set_speed = self.set_speed
+    if self.is_cruise_set and not ui_state.is_metric:
+      set_speed *= KM_TO_MILE
 
-    N = points.shape[0]
-    # Generate left and right 3D points in one array using broadcasting
-    offsets = np.array([[0, -y_off, z_off], [0, y_off, z_off]], dtype=np.float32)
-    points_3d = points[None, :, :] + offsets[:, None, :]  # Shape: 2xNx3
-    points_3d = points_3d.reshape(2 * N, 3)  # Shape: (2*N)x3
-
-    # Transform all points to projected space in one operation
-    proj = self._car_space_transform @ points_3d.T  # Shape: 3x(2*N)
-    proj = proj.reshape(3, 2, N)
-    left_proj = proj[:, 0, :]
-    right_proj = proj[:, 1, :]
-
-    # Filter points where z is sufficiently large
-    valid_proj = (np.abs(left_proj[2]) >= 1e-6) & (np.abs(right_proj[2]) >= 1e-6)
-    if not np.any(valid_proj):
-      return np.empty((0, 2), dtype=np.float32)
-
-    # Compute screen coordinates
-    left_screen = left_proj[:2, valid_proj] / left_proj[2, valid_proj][None, :]
-    right_screen = right_proj[:2, valid_proj] / right_proj[2, valid_proj][None, :]
-
-    # Define clip region bounds
-    clip = self._clip_region
-    x_min, x_max = clip.x, clip.x + clip.width
-    y_min, y_max = clip.y, clip.y + clip.height
-
-    # Filter points within clip region
-    left_in_clip = (
-      (left_screen[0] >= x_min) & (left_screen[0] <= x_max) &
-      (left_screen[1] >= y_min) & (left_screen[1] <= y_max)
-    )
-    right_in_clip = (
-      (right_screen[0] >= x_min) & (right_screen[0] <= x_max) &
-      (right_screen[1] >= y_min) & (right_screen[1] <= y_max)
-    )
-    both_in_clip = left_in_clip & right_in_clip
-
-    if not np.any(both_in_clip):
-      return np.empty((0, 2), dtype=np.float32)
-
-    # Select valid and clipped points
-    left_screen = left_screen[:, both_in_clip]
-    right_screen = right_screen[:, both_in_clip]
-
-    # Handle Y-coordinate inversion on hills
-    if not allow_invert and left_screen.shape[1] > 1:
-      y = left_screen[1, :]  # y-coordinates
-      keep = y == np.minimum.accumulate(y)
-      if not np.any(keep):
-        return np.empty((0, 2), dtype=np.float32)
-      left_screen = left_screen[:, keep]
-      right_screen = right_screen[:, keep]
-
-    return np.vstack((left_screen.T, right_screen[:, ::-1].T)).astype(np.float32)
-
-  @staticmethod
-  def _hsla_to_color(h, s, l, a):
-    rgb = colorsys.hls_to_rgb(h, l, s)
-    return rl.Color(
-      int(rgb[0] * 255),
-      int(rgb[1] * 255),
-      int(rgb[2] * 255),
-      int(a * 255)
+    set_speed_text = CRUISE_DISABLED_CHAR if not self.is_cruise_set else str(round(set_speed))
+    rl.draw_text_ex(
+      self._font_display,
+      set_speed_text,
+      rl.Vector2(x + 13 + 4, y + 3 - 8 - 3 + 4),
+      FONT_SIZES.set_speed,
+      0,
+      set_speed_color,
     )
 
-  @staticmethod
-  def _blend_colors(begin_colors, end_colors, t):
-    if t >= 1.0:
-      return end_colors
-    if t <= 0.0:
-      return begin_colors
+    max_text = tr("MAX")
+    rl.draw_text_ex(
+      self._font_semi_bold,
+      max_text,
+      rl.Vector2(x + 25, y + FONT_SIZES.set_speed - 7 + 4),
+      FONT_SIZES.max_speed,
+      0,
+      max_color,
+    )
 
-    inv_t = 1.0 - t
-    return [rl.Color(
-      int(inv_t * start.r + t * end.r),
-      int(inv_t * start.g + t * end.g),
-      int(inv_t * start.b + t * end.b),
-      int(inv_t * start.a + t * end.a)
-    ) for start, end in zip(begin_colors, end_colors, strict=True)]
+  def _draw_current_speed(self, rect: rl.Rectangle) -> None:
+    """Draw the current vehicle speed and unit."""
+    current_speed_size = round(FONT_SIZES.current_speed * SPEEDOMETER_SCALE)
+    speed_unit_size = round(FONT_SIZES.speed_unit * SPEEDOMETER_SCALE)
+    unit_gap = round(14 * SPEEDOMETER_SCALE)
+
+    speed_text = str(round(self.speed))
+    speed_text_size = measure_text_cached(self._font_bold, speed_text, current_speed_size)
+
+    unit_text = tr("km/h") if ui_state.is_metric else tr("mph")
+    unit_text_size = measure_text_cached(self._font_medium, unit_text, speed_unit_size)
+
+    # Center the combined number-and-unit block in the HUD rectangle.
+    block_height = speed_text_size.y + unit_gap + unit_text_size.y
+    block_top = rect.y + (rect.height - block_height) / 2 + SPEEDOMETER_Y_OFFSET
+    center_x = rect.x + rect.width / 2 + SPEEDOMETER_X_OFFSET
+
+    speed_pos = rl.Vector2(center_x - speed_text_size.x / 2, block_top)
+    unit_pos = rl.Vector2(center_x - unit_text_size.x / 2, block_top + speed_text_size.y + unit_gap)
+    rl.draw_text_ex(self._font_bold, speed_text, speed_pos, current_speed_size, 0, COLORS.WHITE)
+    rl.draw_text_ex(self._font_medium, unit_text, unit_pos, speed_unit_size, 0, COLORS.WHITE_TRANSLUCENT)
