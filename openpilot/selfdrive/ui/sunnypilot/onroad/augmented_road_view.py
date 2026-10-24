@@ -34,7 +34,7 @@ class AugmentedRoadViewSP:
                           _content_rect, rl.Vector2(0, 0), 0.0,
                           rl.Color(255, 255, 255, int(255 * fade_alpha)))
 
-    # Draw the clock face and tunnel beneath the HUD and alerts, as on mici.
+    # Draw the opaque clock face and tunnel beneath the HUD and alerts, as on mici.
     self._clock_background.draw_hud_face(_content_rect)
     self._brake_pressure_icon.render_at(
       _content_rect.x + _content_rect.width / 2,
