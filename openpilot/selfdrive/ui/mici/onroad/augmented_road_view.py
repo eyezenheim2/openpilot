@@ -102,7 +102,6 @@ ROAD_CAM_MIN_SPEED = 10  # m/s (25 mph)
 
 CAM_Y_OFFSET = 20
 STOCK_HUD_HOLD_SECONDS = 5.0
-HUD_DOUBLE_TAP_SECONDS = 0.45
 
 # CAMERA OFFSET DISPLAY - edit these font sizes (pixels).
 CAMERA_OFFSET_VALUE_FONT_SIZE = 72
@@ -245,8 +244,7 @@ class AugmentedRoadView(CameraView):
     self._offset_press_active = False
     self._offset_controls_until = 0.0
     self._steer_ratio_controls_until = 0.0
-    self._last_bottom_label_tap: tuple[str, float] | None = None
-    self._last_screen_tap: tuple[float, float, float] | None = None
+    self._control_swipe_start: tuple[float, float] | None = None
     self._camera_offset_value = float(ui_state.params.get('CameraOffset', return_default=True))
     self._speedometer_visible = True
     self._speedometer_large = False
@@ -318,16 +316,12 @@ class AugmentedRoadView(CameraView):
       self._speedometer_large = True
     self._offset_controls_until = 0.0
     self._steer_ratio_controls_until = 0.0
-    self._last_bottom_label_tap = None
-    self._last_screen_tap = None
     self._speedometer_visible = not self._stock_hud
 
   def _toggle_stock_hud(self) -> None:
     self._stock_hud = not self._stock_hud
     self._offset_controls_until = 0.0
     self._steer_ratio_controls_until = 0.0
-    self._last_bottom_label_tap = None
-    self._last_screen_tap = None
     self._speedometer_visible = not self._stock_hud
     if self._stock_hud:
       self._confidence_ball.release_face_texture()
@@ -337,18 +331,9 @@ class AugmentedRoadView(CameraView):
     return (rect.x <= pos.x < rect.x + rect.width - SIDE_PANEL_WIDTH and
             rect.y <= pos.y < rect.y + rect.height)
 
-  def _bottom_label_at(self, pos: MousePos) -> str | None:
-    rect = self._content_rect
-    if not (rect.y + rect.height * 0.88 <= pos.y < rect.y + rect.height):
-      return None
-    return "camera" if pos.x < rect.x + rect.width / 2 else "steer"
-
   def _handle_mouse_press(self, mouse_pos: MousePos):
     if not ui_state.started:
       super()._handle_mouse_press(mouse_pos)
-      return
-    if self._hud_renderer.is_steer_ratio_control_at(mouse_pos):
-      self._face_press = None
       return
     if self._stock_hud:
       super()._handle_mouse_press(mouse_pos)
@@ -357,6 +342,7 @@ class AugmentedRoadView(CameraView):
       return
     now = rl.get_time()
     self._face_press = (now, mouse_pos.x, mouse_pos.y)
+    self._control_swipe_start = (mouse_pos.x, mouse_pos.y)
     self._hold_toggled = False
     self._hud_hold_toggled = False
     self._offset_press_active = now < self._offset_controls_until
@@ -392,8 +378,20 @@ class AugmentedRoadView(CameraView):
   def _handle_mouse_release(self, mouse_pos: MousePos):
     if not ui_state.started:
       self._face_press = None
+      self._control_swipe_start = None
       super()._handle_mouse_release(mouse_pos)
       return
+    swipe_start = self._control_swipe_start
+    self._control_swipe_start = None
+    if swipe_start is not None:
+      dx, dy = mouse_pos.x - swipe_start[0], mouse_pos.y - swipe_start[1]
+      if self._inside_face(MousePos(swipe_start[0], swipe_start[1])) and self._inside_face(mouse_pos) and dy >= 65 and abs(dx) <= 90:
+        self._face_press = None
+        self._offset_controls_until = 0.0
+        self._steer_ratio_controls_until = rl.get_time() + 5.0
+        self._speedometer_visible = False
+        return
+
     press = self._face_press
     if press is None:
       return
@@ -410,19 +408,17 @@ class AugmentedRoadView(CameraView):
       super()._handle_mouse_release(mouse_pos)
       return
 
-    self._last_bottom_label_tap = None
-    # A double-tap anywhere switches from the camera-offset bar to steer ratio.
-    last_tap = self._last_screen_tap
-    is_screen_double_tap = (
-      last_tap is not None and
-      now - last_tap[0] <= HUD_DOUBLE_TAP_SECONDS and
-      (mouse_pos.x - last_tap[1]) ** 2 + (mouse_pos.y - last_tap[2]) ** 2 <= 50 ** 2
-    )
-    if is_screen_double_tap:
-      self._last_screen_tap = None
-      self._offset_controls_until = 0.0
+    # In steer-ratio mode, the same left/value/right bar adjusts or toggles the ratio.
+    if now < self._steer_ratio_controls_until and self._hud_renderer.is_steer_ratio_control_at(mouse_pos):
+      third = self._content_rect.x + self._content_rect.width / 3
+      two_thirds = self._content_rect.x + self._content_rect.width * 2 / 3
+      if mouse_pos.x < third:
+        self._hud_renderer.adjust_steer_ratio("-")
+      elif mouse_pos.x > two_thirds:
+        self._hud_renderer.adjust_steer_ratio("+")
+      else:
+        self._hud_renderer.toggle_steer_ratio()
       self._steer_ratio_controls_until = now + 5.0
-      self._speedometer_visible = False
       return
 
     # While the camera-offset bar is open, a single tap adjusts left or right.
@@ -436,11 +432,9 @@ class AugmentedRoadView(CameraView):
       self._model_renderer._camera_offset = value
       self._model_renderer._transform_dirty = True
       self._offset_controls_until = now + 5.0
-      self._last_screen_tap = (now, mouse_pos.x, mouse_pos.y)
       return
 
     # A single tap anywhere opens the full-width camera-offset bar.
-    self._last_screen_tap = (now, mouse_pos.x, mouse_pos.y)
     self._steer_ratio_controls_until = 0.0
     self._camera_offset_value = float(ui_state.params.get('CameraOffset', return_default=True))
     self._offset_controls_until = now + 5.0
@@ -460,36 +454,45 @@ class AugmentedRoadView(CameraView):
     font = gui_app.font(FontWeight.DISPLAY_REGULAR)
     active = ui_state.active_bundle is not None
     color = rl.WHITE if active else rl.Color(160, 160, 160, 255)
-    label_size = max(22, min(34, rect.height * 0.055))
-    for label, fraction in (("CAMERA OFFSET", 0.22), ("STEER RATIO", 0.78)):
-      measured = rl.measure_text_ex(font, label, label_size, 0)
-      pos = rl.Vector2(rect.x + rect.width * fraction - measured.x / 2,
-                       rect.y + rect.height - measured.y - 12)
-      rl.draw_text_ex(font, label, pos, label_size, 0, color)
-
-    if self._offset_controls_until == 0.0:
+    steer_ratio_visible = now < self._steer_ratio_controls_until
+    if self._offset_controls_until == 0.0 and not steer_ratio_visible:
       return
     # Font sizes are configured near the top of this file.
-    height = max(150.0, CAMERA_OFFSET_VALUE_FONT_SIZE + 32, CAMERA_OFFSET_SYMBOL_FONT_SIZE + 32)
+    height = max(150.0, min(rect.height * 0.25, 220.0),
+                 CAMERA_OFFSET_VALUE_FONT_SIZE + 32, CAMERA_OFFSET_SYMBOL_FONT_SIZE + 32)
     top = rect.y + (rect.height - height) / 2
     rl.draw_rectangle_rec(rl.Rectangle(rect.x, top, rect.width, height), rl.BLACK)
-    value = 0.0 if abs(self._camera_offset_value) < 0.005 else self._camera_offset_value
-    value_text = f'{value:.2f}'
+    if steer_ratio_visible:
+      value_text = f'{self._hud_renderer.steer_ratio_value():.1f}'
+    else:
+      value = 0.0 if abs(self._camera_offset_value) < 0.005 else self._camera_offset_value
+      value_text = f'{value:.2f}'
     value_size = rl.measure_text_ex(font, value_text, CAMERA_OFFSET_VALUE_FONT_SIZE, 0)
-    value_pos = rl.Vector2(rect.x + rect.width * 0.50 - value_size.x / 2,
-                           top + (height - value_size.y) / 2)
+    value_y = top + (height - value_size.y) / 2 - (12 if steer_ratio_visible else 0)
+    value_pos = rl.Vector2(rect.x + rect.width * 0.50 - value_size.x / 2, value_y)
     rl.draw_text_ex(font, value_text, value_pos, CAMERA_OFFSET_VALUE_FONT_SIZE, 0, color)
+
+    if steer_ratio_visible:
+      state_text = "FIXED ON" if self._hud_renderer.steer_ratio_enabled() else "FIXED OFF"
+      state_size = max(20, CAMERA_OFFSET_SYMBOL_FONT_SIZE // 2)
+      state_measured = rl.measure_text_ex(font, state_text, state_size, 0)
+      rl.draw_text_ex(font, state_text,
+                      rl.Vector2(rect.x + rect.width * 0.5 - state_measured.x / 2,
+                                 top + height - state_measured.y - 8),
+                      state_size, 0, color)
 
     arrow_size = min(74.0, height * 0.42)
     arrow_y = top + height / 2
     arrow_color = rl.Color(0, 220, 80, 255)
+    if steer_ratio_visible and not self._hud_renderer.steer_ratio_adjustment_allowed():
+      arrow_color = rl.Color(90, 105, 95, 255)
     left_x, right_x = rect.x + rect.width * 0.28, rect.x + rect.width * 0.72
     rl.draw_triangle(rl.Vector2(left_x - arrow_size / 2, arrow_y),
                      rl.Vector2(left_x + arrow_size / 2, arrow_y - arrow_size / 2),
                      rl.Vector2(left_x + arrow_size / 2, arrow_y + arrow_size / 2), arrow_color)
     rl.draw_triangle(rl.Vector2(right_x + arrow_size / 2, arrow_y),
-                     rl.Vector2(right_x - arrow_size / 2, arrow_y - arrow_size / 2),
-                     rl.Vector2(right_x - arrow_size / 2, arrow_y + arrow_size / 2), arrow_color)
+                     rl.Vector2(right_x - arrow_size / 2, arrow_y + arrow_size / 2),
+                     rl.Vector2(right_x - arrow_size / 2, arrow_y - arrow_size / 2), arrow_color)
 
   def _draw_speedometer(self):
     if not self._speedometer_visible:
