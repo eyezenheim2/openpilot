@@ -25,11 +25,11 @@ class BrakePressureBall:
 
     center = rl.Vector2(center_x, center_y)
     inner_radius, outer_radius = radius * 0.82, radius * 0.98
-    track_color = rl.Color(90, 34, 48, 220)
+    track_color = rl.Color(105, 105, 105, 255)
     brake_color = rl.Color(255, 35, 75, 255)
 
-    # Opaque black backing keeps the pressure gauge legible over camera imagery.
-    rl.draw_circle_v(center, radius + 5, rl.BLACK)
+    # Neutral grayscale backing keeps the pressure gauge legible over camera imagery.
+    rl.draw_circle_v(center, radius + 5, rl.Color(45, 45, 45, 255))
     rl.draw_ring(center, inner_radius, outer_radius, 0, 360, 96, track_color)
     if percent:
       end_angle = -90 + 360 * percent / 100
@@ -41,7 +41,7 @@ class BrakePressureBall:
       rl.draw_circle_v(rl.Vector2(center_x + math.cos(cap_angle) * cap_distance,
                                   center_y + math.sin(cap_angle) * cap_distance), cap_radius, brake_color)
 
-    rl.draw_circle_v(center, radius * 0.76, rl.BLACK)
+    rl.draw_circle_v(center, radius * 0.76, rl.Color(28, 28, 28, 255))
     if not show_readout:
       return
 
