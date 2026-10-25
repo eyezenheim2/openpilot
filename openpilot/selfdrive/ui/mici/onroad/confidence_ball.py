@@ -1,6 +1,5 @@
 import math
 import time
-from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import pyray as rl
@@ -15,18 +14,15 @@ CLOCK_TIMEZONE = ZoneInfo('America/Los_Angeles')
 # DATE DISPLAY - sizes are fractions of HUD height; position is relative to HUD.
 DATE_NUMBER_SIZE = 0.21
 DATE_WEEKDAY_SIZE = 0.08
-DATE_CENTER_X = 0.74
-DATE_CENTER_Y = 0.635
+DATE_CENTER_X = 0.86
+DATE_CENTER_Y = 0.82
 DATE_LINE_GAP = 0.01
-CLOCK_BACKGROUND = Path(__file__).with_name('contour_clock_face.png')
 
 
 class ConfidenceBall(Widget):
   def __init__(self, demo: bool = False):
     Widget.__init__(self)
     self._demo = demo
-    self._face_texture = None
-    self._face_texture_checked = False
     self._confidence_filter = FirstOrderFilter(-0.5, 0.5, 1 / gui_app.target_fps)
 
   @staticmethod
@@ -60,29 +56,13 @@ class ConfidenceBall(Widget):
                      sm["driverMonitoringState"].visionPolicyState.faceDetected)
     self._draw_lead_tunnel(rect, phase, 1.0, colorful=face_detected)
     timestamp = time.time()
-    self._draw_clock(rect, timestamp)
     self._draw_date(rect, timestamp)
 
   def _draw_face_background(self, rect: rl.Rectangle):
-    if not self._face_texture_checked:
-      self._face_texture_checked = True
-      if CLOCK_BACKGROUND.is_file():
-        texture = rl.load_texture(str(CLOCK_BACKGROUND))
-        if texture.id:
-          self._face_texture = texture
-          rl.set_texture_filter(texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
     rl.draw_rectangle_rec(rect, rl.BLACK)
-    if self._face_texture is not None:
-      texture = self._face_texture
-      # Scale the complete landscape dial so no edge numerals are cropped.
-      source = rl.Rectangle(0, 0, texture.width, texture.height)
-      rl.draw_texture_pro(texture, source, rect, rl.Vector2(0, 0), 0, rl.WHITE)
 
   def release_face_texture(self):
-    if self._face_texture is not None:
-      rl.unload_texture(self._face_texture)
-      self._face_texture = None
-    self._face_texture_checked = False
+    pass
 
   @staticmethod
   def _draw_lead_tunnel(panel: rl.Rectangle, phase: float, alpha: float, colorful: bool = False) -> None:
@@ -132,57 +112,6 @@ class ConfidenceBall(Widget):
           color.a = opacity // 4 if inverted else opacity
         for j in range(3):
           clipped_line(points[j], points[(j+1)%3], width, color)
-
-  @staticmethod
-  def _clock_angles(timestamp: float) -> tuple[float, float, float]:
-    """Pacific time with automatic PST/PDT and smoothly moving hands."""
-    local = datetime.fromtimestamp(timestamp, CLOCK_TIMEZONE)
-    seconds = local.second + local.microsecond / 1_000_000
-    minutes = local.minute + seconds / 60.0
-    hours = local.hour % 12 + minutes / 60.0
-    return tuple(value * math.tau - math.pi / 2 for value in
-                 (hours / 12.0, minutes / 60.0, seconds / 60.0))
-
-  @staticmethod
-  def _draw_clock(rect: rl.Rectangle, timestamp: float) -> None:
-    """Compact analog clock in the upper-left, with digital time beneath."""
-    if rect.width <= 0 or rect.height <= 0:
-      return
-    w, h = rect.width, rect.height
-    unit = min(w, h)
-    cx, cy = rect.x + w * 0.14, rect.y + h * 0.17
-    radius = unit * 0.085
-    white = rl.Color(225, 230, 238, 235)
-    red = rl.Color(244, 48, 40, 255)
-    hour, minute, second = ConfidenceBall._clock_angles(timestamp)
-
-    rl.draw_circle_lines(int(cx), int(cy), radius, rl.Color(205, 214, 226, 210))
-    for tick in range(12):
-      angle = tick * math.tau / 12 - math.pi / 2
-      inner = radius * 0.82
-      outer = radius * (0.94 if tick % 3 == 0 else 0.88)
-      rl.draw_line_ex(rl.Vector2(cx + math.cos(angle) * inner, cy + math.sin(angle) * inner),
-                      rl.Vector2(cx + math.cos(angle) * outer, cy + math.sin(angle) * outer),
-                      max(1.0, unit * 0.003), white)
-
-    def hand_point(angle: float, length: float) -> rl.Vector2:
-      return rl.Vector2(cx + math.cos(angle) * radius * length,
-                        cy + math.sin(angle) * radius * length)
-
-    for angle, length, thickness in ((hour, 0.48, unit * 0.008), (minute, 0.72, unit * 0.006)):
-      rl.draw_line_ex(rl.Vector2(cx, cy), hand_point(angle, length), thickness, white)
-    rl.draw_line_ex(hand_point(second, -0.18), hand_point(second, 0.82),
-                    max(1.0, unit * 0.002), red)
-    rl.draw_circle_v(rl.Vector2(cx, cy), unit * 0.006, white)
-
-    local = datetime.fromtimestamp(timestamp, CLOCK_TIMEZONE)
-    digital_time = local.strftime("%I:%M").lstrip("0")
-    font = gui_app.font(FontWeight.DISPLAY_REGULAR)
-    size = h * 0.06
-    measured = rl.measure_text_ex(font, digital_time, size, 0)
-    rl.draw_text_ex(font, digital_time,
-                    rl.Vector2(cx - measured.x / 2, cy + radius + h * 0.018),
-                    size, 0, white)
 
   @staticmethod
   def _draw_date(rect: rl.Rectangle, timestamp: float) -> None:
