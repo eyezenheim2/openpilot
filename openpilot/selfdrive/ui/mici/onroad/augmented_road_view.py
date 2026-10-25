@@ -502,9 +502,13 @@ class AugmentedRoadView(CameraView):
     border = rl.Color(80, 220, 130, 230) if parked else rl.Color(120, 120, 125, 180)
     rl.draw_rectangle_rounded(rect, 0.18, 8, background)
     rl.draw_rectangle_rounded_lines_ex(rect, 0.18, 8, 2, border)
+    hud = self._content_rect
+    line_height = 4.0
+    line_y = hud.y + hud.height - line_height
+    rl.draw_rectangle_rec(rl.Rectangle(hud.x, line_y, hud.width, line_height),
+                          rl.Color(100, 110, 120, 150))
     if progress > 0:
-      fill = rl.Rectangle(rect.x + 3, rect.y + rect.height - 7,
-                          (rect.width - 6) * progress, 4)
+      fill = rl.Rectangle(hud.x, line_y, hud.width * progress, line_height)
       rl.draw_rectangle_rec(fill, rl.Color(0, 225, 110, 255))
     font = gui_app.font(FontWeight.SEMI_BOLD)
     label = "HOLD TO RESET" if parked else "PARK TO RESET"
