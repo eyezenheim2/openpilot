@@ -108,6 +108,7 @@ ROAD_CAM_MIN_SPEED = 10  # m/s (25 mph)
 
 CAM_Y_OFFSET = 20
 STOCK_HUD_HOLD_SECONDS = 5.0
+CALIBRATION_RESET_HOLD_SECONDS = 2.0
 
 # CAMERA OFFSET DISPLAY - edit these font sizes (pixels).
 CAMERA_OFFSET_VALUE_FONT_SIZE = 72
@@ -248,6 +249,8 @@ class AugmentedRoadView(CameraView):
     self._hold_toggled = False
     self._hud_hold_toggled = False
     self._offset_press_active = False
+    self._calibration_reset_press_started: float | None = None
+    self._calibration_reset_message_until = 0.0
     self._offset_controls_until = 0.0
     self._steer_ratio_controls_until = 0.0
     self._control_swipe_start: tuple[float, float] | None = None
@@ -344,6 +347,11 @@ class AugmentedRoadView(CameraView):
     if self._stock_hud:
       super()._handle_mouse_press(mouse_pos)
     self._face_press = None
+    if rl.check_collision_point_rec(rl.Vector2(mouse_pos.x, mouse_pos.y), self._calibration_reset_rect()):
+      self._calibration_reset_press_started = rl.get_time()
+      self._control_swipe_start = None
+      self._offset_press_active = False
+      return
     if not self._inside_face(mouse_pos):
       return
     now = rl.get_time()
@@ -371,6 +379,19 @@ class AugmentedRoadView(CameraView):
 
   def _handle_mouse_event(self, event: MouseEvent):
     super()._handle_mouse_event(event)
+    if self._calibration_reset_press_started is not None:
+      if event.left_pressed:
+        return
+      now = rl.get_time()
+      button = self._calibration_reset_rect()
+      still_inside = rl.check_collision_point_rec(rl.Vector2(event.pos.x, event.pos.y), button)
+      if not event.left_down or not still_inside or not self._is_parked_for_calibration_reset():
+        self._calibration_reset_press_started = None
+      elif now - self._calibration_reset_press_started >= CALIBRATION_RESET_HOLD_SECONDS:
+        self._reset_calibration()
+        self._calibration_reset_press_started = None
+        self._calibration_reset_message_until = now + 3.5
+      return
     press = self._face_press
     if press is None:
       return
@@ -382,6 +403,9 @@ class AugmentedRoadView(CameraView):
       self._toggle_speedometer_for_hold(rl.get_time())
 
   def _handle_mouse_release(self, mouse_pos: MousePos):
+    if self._calibration_reset_press_started is not None:
+      self._calibration_reset_press_started = None
+      return
     if not ui_state.started:
       self._face_press = None
       self._control_swipe_start = None
@@ -446,6 +470,60 @@ class AugmentedRoadView(CameraView):
     self._offset_controls_until = now + 5.0
     self._speedometer_visible = False
 
+  def _calibration_reset_rect(self) -> rl.Rectangle:
+    rect = self._content_rect
+    width = min(220.0, rect.width * 0.22)
+    height = 60.0
+    return rl.Rectangle(rect.x + 16, rect.y + rect.height - height - 16, width, height)
+
+  def _is_parked_for_calibration_reset(self) -> bool:
+    sm = ui_state.sm
+    return (not ui_state.engaged and sm.valid['carState'] and sm.alive['carState'] and
+            sm.recv_frame['carState'] > ui_state.started_frame and
+            sm['carState'].gearShifter == car.CarState.GearShifter.park and
+            abs(sm['carState'].vEgo) < 0.1)
+
+  def _reset_calibration(self) -> None:
+    # Recheck at the point of action in case the vehicle moved during the hold.
+    if not self._is_parked_for_calibration_reset():
+      return
+    params = ui_state.params
+    for key in ("CalibrationParams", "LiveTorqueParameters", "LiveParametersV2", "LiveDelay"):
+      params.remove(key)
+    params.put_bool("OnroadCycleRequested", True, block=True)
+
+  def _draw_calibration_reset(self) -> None:
+    now = rl.get_time()
+    rect = self._calibration_reset_rect()
+    parked = self._is_parked_for_calibration_reset()
+    pressed = self._calibration_reset_press_started is not None and parked
+    progress = min(1.0, (now - self._calibration_reset_press_started) / CALIBRATION_RESET_HOLD_SECONDS) if pressed else 0.0
+    background = rl.Color(12, 14, 18, 220)
+    border = rl.Color(80, 220, 130, 230) if parked else rl.Color(120, 120, 125, 180)
+    rl.draw_rectangle_rounded(rect, 0.18, 8, background)
+    rl.draw_rectangle_rounded_lines_ex(rect, 0.18, 8, 2, border)
+    if progress > 0:
+      fill = rl.Rectangle(rect.x + 3, rect.y + rect.height - 7,
+                          (rect.width - 6) * progress, 4)
+      rl.draw_rectangle_rec(fill, rl.Color(0, 225, 110, 255))
+    font = gui_app.font(FontWeight.SEMI_BOLD)
+    label = "HOLD TO RESET" if parked else "PARK TO RESET"
+    color = rl.WHITE if parked else rl.Color(155, 155, 160, 255)
+    size = max(9, min(14, rect.width * 0.025))
+    line1 = rl.measure_text_ex(font, label, size, 0)
+    line2 = rl.measure_text_ex(font, "CALIBRATION", size, 0)
+    rl.draw_text_ex(font, label,
+                    rl.Vector2(rect.x + (rect.width - line1.x) / 2, rect.y + 15), size, 0, color)
+    rl.draw_text_ex(font, "CALIBRATION",
+                    rl.Vector2(rect.x + (rect.width - line2.x) / 2, rect.y + 32), size, 0, color)
+    if now < self._calibration_reset_message_until:
+      message = "CALIBRATION RESET"
+      msg_size = 24
+      measured = rl.measure_text_ex(font, message, msg_size, 0)
+      rl.draw_text_ex(font, message,
+                      rl.Vector2(rect.x + (rect.width - measured.x) / 2,
+                                 rect.y - measured.y - 10),
+                      msg_size, 0, rl.Color(80, 255, 145, 255))
   def _draw_touch_controls(self):
     now = rl.get_time()
     if now >= self._offset_controls_until:
@@ -591,6 +669,7 @@ class AugmentedRoadView(CameraView):
                           min(self._content_rect.width * 0.23, self._content_rect.height * 0.43) * 0.98),
       )
       self._draw_touch_controls()
+      self._draw_calibration_reset()
 
     alert_to_render, not_animating_out = self._alert_renderer.will_render()
 
