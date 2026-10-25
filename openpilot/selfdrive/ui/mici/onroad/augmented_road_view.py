@@ -9,7 +9,7 @@ from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.lib.dm_hud_toggle import DmHudToggle
 from openpilot.selfdrive.ui.mici.onroad import SIDE_PANEL_WIDTH
 from openpilot.selfdrive.ui.mici.onroad.alert_renderer import AlertRenderer
-from openpilot.selfdrive.ui.mici.onroad.driver_state import DriverStateRenderer
+from openpilot.selfdrive.ui.sunnypilot.onroad.clock_background import ClockBackground, DATE_NUMBER_SIZE
 from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.mici.onroad.model_renderer import ModelRenderer
 from openpilot.selfdrive.ui.mici.onroad.confidence_ball import ConfidenceBall
@@ -116,13 +116,10 @@ CAMERA_OFFSET_SYMBOL_FONT_SIZE = 58
 
 # SPEEDOMETER DISPLAY - centered in the marked area between 8 and 9.
 SPEEDOMETER_VALUE_FONT_SIZE = 112
-SPEEDOMETER_UNIT_FONT_SIZE = 36
 SPEEDOMETER_CENTER_X = 0.085  # Match the stock set-speed slot at the upper left.
 SPEEDOMETER_CENTER_Y = 0.17  # Adjusted at render time to align with the brake gauge top.
-SPEEDOMETER_UNIT_GAP = 6  # Pixels between the value and unit.
 # LARGE CENTERED SPEEDOMETER - selected by a 0.6-second long press.
 SPEEDOMETER_LARGE_VALUE_FONT_SIZE = 224
-SPEEDOMETER_LARGE_UNIT_FONT_SIZE = 48
 SPEEDOMETER_LARGE_CENTER_X = 0.50
 SPEEDOMETER_LARGE_CENTER_Y = 0.50
 
@@ -224,6 +221,8 @@ class BookmarkIcon(Widget):
         self._is_swiping = False
         self._is_swiping_left = False
 
+
+
   def _render(self, _):
     """Render the bookmark icon."""
     if self._offset_filter.x > 0:
@@ -266,10 +265,10 @@ class AugmentedRoadView(CameraView):
     self._model_renderer = ModelRenderer()
     self._hud_renderer = SpeedometerHudRenderer()
     self._alert_renderer = AlertRenderer()
-    self._driver_state_renderer = DriverStateRenderer()
     self._confidence_ball = ConfidenceBall()
     self._stock_confidence_ball = StockConfidenceBall()
     self._brake_pressure = BrakePressureBall()
+    self._clock_background = ClockBackground()
     self._offroad_label = UnifiedLabel("start the car to\nuse sunnypilot", 54, FontWeight.DISPLAY,
                                        text_color=rl.Color(255, 255, 255, int(255 * 0.9)),
                                        alignment=TextAlignment.CENTER,
@@ -321,6 +320,7 @@ class AugmentedRoadView(CameraView):
       self._stock_hud = True
       self._speedometer_large = False
       self._confidence_ball.release_face_texture()
+      self._clock_background.release_face_texture()
     else:
       self._speedometer_large = True
     self._offset_controls_until = 0.0
@@ -334,6 +334,7 @@ class AugmentedRoadView(CameraView):
     self._speedometer_visible = not self._stock_hud
     if self._stock_hud:
       self._confidence_ball.release_face_texture()
+      self._clock_background.release_face_texture()
 
   def _inside_face(self, pos: MousePos) -> bool:
     rect = self.rect
@@ -587,33 +588,73 @@ class AugmentedRoadView(CameraView):
     if (not sm.valid['carState'] or not sm.alive['carState'] or
         sm.recv_frame['carState'] <= ui_state.started_frame):
       return
-    # HudRenderer updates speed using cluster speed and the selected units.
     rect = self._content_rect
-    if self._speedometer_large:
-      value_size, unit_size = SPEEDOMETER_LARGE_VALUE_FONT_SIZE, SPEEDOMETER_LARGE_UNIT_FONT_SIZE
-      x_fraction, y_fraction = SPEEDOMETER_LARGE_CENTER_X, SPEEDOMETER_LARGE_CENTER_Y
-    else:
-      value_size, unit_size = SPEEDOMETER_VALUE_FONT_SIZE, SPEEDOMETER_UNIT_FONT_SIZE
-      x_fraction, y_fraction = SPEEDOMETER_CENTER_X, SPEEDOMETER_CENTER_Y
+    value_size = SPEEDOMETER_LARGE_VALUE_FONT_SIZE if self._speedometer_large else SPEEDOMETER_VALUE_FONT_SIZE
+    x_fraction = SPEEDOMETER_LARGE_CENTER_X if self._speedometer_large else SPEEDOMETER_CENTER_X
+    y_fraction = SPEEDOMETER_LARGE_CENTER_Y if self._speedometer_large else SPEEDOMETER_CENTER_Y
     center_x = rect.x + rect.width * x_fraction
-    total_height = value_size + SPEEDOMETER_UNIT_GAP + unit_size
     if self._speedometer_large:
       center_y = rect.y + rect.height * y_fraction
     else:
       brake_radius = min(rect.width * 0.23, rect.height * 0.43)
-      center_y = rect.y + rect.height * 0.52 - brake_radius * 0.98 + total_height / 2
-    y = center_y - total_height / 2
-    for label, size, weight in (
-      (str(round(self._hud_renderer.speed)), value_size, FontWeight.DISPLAY),
-      ('km/h' if ui_state.is_metric else 'mph', unit_size, FontWeight.SEMI_BOLD),
-    ):
-      font = gui_app.font(weight)
-      measured = rl.measure_text_ex(font, label, size, 0)
-      pos = rl.Vector2(center_x - measured.x / 2, y)
-      rl.draw_text_ex(font, label, rl.Vector2(pos.x + 2, pos.y + 2), size, 0, rl.BLACK)
-      rl.draw_text_ex(font, label, pos, size, 0, rl.WHITE)
-      y += size + SPEEDOMETER_UNIT_GAP
+      center_y = rect.y + rect.height * 0.52 - brake_radius * 0.98 + value_size / 2
+    label = str(round(self._hud_renderer.speed))
+    font = gui_app.font(FontWeight.DISPLAY)
+    measured = rl.measure_text_ex(font, label, value_size, 0)
+    pos = rl.Vector2(center_x - measured.x / 2, center_y - value_size / 2)
+    rl.draw_text_ex(font, label, rl.Vector2(pos.x + 2, pos.y + 2), value_size, 0, rl.BLACK)
+    rl.draw_text_ex(font, label, pos, value_size, 0, rl.WHITE)
 
+  def _draw_full_hud_clock(self):
+    rect = self._content_rect
+    cx, cy = rect.x + rect.width / 2, rect.y + rect.height / 2
+    now = datetime.now().astimezone()
+    seconds = now.second + now.microsecond / 1_000_000
+    minutes = now.minute + seconds / 60.0
+    hours = now.hour % 12 + minutes / 60.0
+    hands = ((-90 + hours * 30, 0.22, 0.018, rl.WHITE),
+             (-90 + minutes * 6, 0.43, 0.010, rl.WHITE),
+             (-90 + seconds * 6, 0.43, 0.003, rl.Color(255, 45, 58, 255)))
+    for angle, length, thickness, color in hands:
+      end = rl.Vector2(cx + math.cos(math.radians(angle)) * rect.width * length,
+                       cy + math.sin(math.radians(angle)) * rect.height * length)
+      rl.draw_line_ex(rl.Vector2(cx + 2, cy + 2), rl.Vector2(end.x + 2, end.y + 2),
+                      max(1, rect.height * thickness + 2), rl.BLACK)
+      rl.draw_line_ex(rl.Vector2(cx, cy), end, max(1, rect.height * thickness), color)
+
+  def _draw_brake_pressure_arch(self):
+    rect = self._content_rect
+    center_x = rect.x + rect.width * 0.50
+    center_y = rect.y + rect.height * 0.52
+    radius = min(rect.width * 0.23, rect.height * 0.43)
+    percent = self._brake_pressure.brake_percent()
+    center = rl.Vector2(center_x, center_y)
+    inner_radius, outer_radius = radius * 0.82, radius * 0.98
+    rl.draw_ring(center, inner_radius, outer_radius, 0, 360, 96, rl.Color(75, 78, 84, 220))
+    if percent > 0:
+      end_angle = -90 + 360 * percent / 100
+      brake_color = rl.Color(255, 35, 75, 255)
+      rl.draw_ring(center, inner_radius, outer_radius, -90, end_angle,
+                   max(2, round(96 * percent / 100)), brake_color)
+      cap_radius = (outer_radius - inner_radius) / 2
+      cap_distance = (outer_radius + inner_radius) / 2
+      cap_angle = math.radians(end_angle)
+      rl.draw_circle_v(rl.Vector2(center_x + math.cos(cap_angle) * cap_distance,
+                                  center_y + math.sin(cap_angle) * cap_distance),
+                       cap_radius, brake_color)
+  def _draw_brake_pressure_percentage(self):
+    rect = self._content_rect
+    percent = self._brake_pressure.brake_percent()
+    text = f"{percent}%"
+    font_size = rect.height * DATE_NUMBER_SIZE
+    font = gui_app.font(FontWeight.DISPLAY)
+    measured = rl.measure_text_ex(font, text, font_size, 0)
+    radius = min(rect.width * 0.23, rect.height * 0.43)
+    x = rect.x + rect.width * 0.86 - measured.x / 2
+    y = rect.y + rect.height * 0.52 - radius * 0.98
+    color = rl.WHITE if percent > 0 else rl.Color(145, 149, 157, 255)
+    rl.draw_text_ex(font, text, rl.Vector2(x + 2, y + 2), font_size, 0, rl.BLACK)
+    rl.draw_text_ex(font, text, rl.Vector2(x, y), font_size, 0, color)
   def _render(self, _):
     # Offroad retains the normal startup/status screen.
     if not ui_state.started:
@@ -656,40 +697,20 @@ class AugmentedRoadView(CameraView):
     # Fade out bottom of overlays for looks
     rl.draw_texture_ex(self._fade_texture, rl.Vector2(self._content_rect.x, self._content_rect.y), 0.0, 1.0, rl.WHITE)
 
-    # Continuous triangle animation sits below speed, driver monitoring, steering, and alerts.
+    # Draw the full-HUD clock face and pressure arc beneath the HUD text.
     if not self._stock_hud:
-      self._confidence_ball.draw_hud_face(self._content_rect)
-      offset_controls_visible = rl.get_time() < self._offset_controls_until
-      self._brake_pressure.render_at(
-        self._content_rect.x + self._content_rect.width * 0.50,
-        self._content_rect.y + self._content_rect.height * 0.52,
-        min(self._content_rect.width * 0.23, self._content_rect.height * 0.43),
-        self._brake_pressure.brake_percent(),
-        show_readout=not offset_controls_visible,
-        readout_position=(self._content_rect.x + self._content_rect.width * 0.86,
-                          self._content_rect.y + self._content_rect.height * 0.52 -
-                          min(self._content_rect.width * 0.23, self._content_rect.height * 0.43) * 0.98),
-      )
+      self._clock_background.draw_hud_face(self._content_rect, draw_small_clock=False)
+      self._draw_full_hud_clock()
+      self._draw_brake_pressure_arch()
+      self._draw_brake_pressure_percentage()
       self._draw_touch_controls()
       self._draw_calibration_reset()
 
-    alert_to_render, not_animating_out = self._alert_renderer.will_render()
-
-    # Both custom layouts hide status icons while engaged.
-    hide_status_icons = not self._stock_hud and ui_state.sm['selfdriveState'].enabled
-    self._hud_renderer.set_show_steering_wheel(not hide_status_icons)
-    # Hide DMoji when disengaged unless AlwaysOnDM is enabled.
-    should_draw_dmoji = (not hide_status_icons and not self._hud_renderer.drawing_top_icons() and
-                         (ui_state.status != UIStatus.DISENGAGED or ui_state.always_on_dm))
-    self._driver_state_renderer.set_should_draw(should_draw_dmoji)
-    self._driver_state_renderer.set_position(self._rect.x + 16, self._rect.y + 10)
-    if not hide_status_icons:
-      self._driver_state_renderer.render()
+    alert_to_render, _ = self._alert_renderer.will_render()
 
     self._hud_renderer.show_current_speed = not self._stock_hud and self._speedometer_visible
     self._hud_renderer.set_can_draw_top_icons((self._stock_hud or self._speedometer_visible) and alert_to_render is None)
-    self._hud_renderer.set_wheel_critical_icon(alert_to_render is not None and not not_animating_out and
-                                               alert_to_render.visual_alert == car.CarControl.HUDControl.VisualAlert.steerRequired)
+    self._hud_renderer.set_wheel_critical_icon(False)
     self._hud_renderer.set_steer_ratio_controls_visible(rl.get_time() < self._steer_ratio_controls_until)
     self._hud_renderer.render(self._content_rect)
     if not self._stock_hud:
@@ -817,6 +838,7 @@ class AugmentedRoadView(CameraView):
 
   def close(self):
     self._confidence_ball.release_face_texture()
+    self._clock_background.release_face_texture()
     super().close()
 
   def show_event(self):
@@ -825,6 +847,7 @@ class AugmentedRoadView(CameraView):
 
   def hide_event(self):
     self._confidence_ball.release_face_texture()
+    self._clock_background.release_face_texture()
     self._face_press = None
     if gui_app.sunnypilot_ui():
       ui_state.reset_onroad_sleep_timer(OnroadTimerStatus.PAUSE)
