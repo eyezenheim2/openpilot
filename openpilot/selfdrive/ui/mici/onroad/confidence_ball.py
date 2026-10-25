@@ -13,8 +13,8 @@ LEAD_TUNNEL_SPEED = 0.45
 LEAD_TUNNEL_BRIGHTNESS = 0.38
 CLOCK_TIMEZONE = ZoneInfo('America/Los_Angeles')
 # DATE DISPLAY - sizes are fractions of HUD height; position is relative to HUD.
-DATE_NUMBER_SIZE = 0.15
-DATE_WEEKDAY_SIZE = 0.055
+DATE_NUMBER_SIZE = 0.21
+DATE_WEEKDAY_SIZE = 0.08
 DATE_CENTER_X = 0.74
 DATE_CENTER_Y = 0.635
 DATE_LINE_GAP = 0.01
@@ -145,31 +145,44 @@ class ConfidenceBall(Widget):
 
   @staticmethod
   def _draw_clock(rect: rl.Rectangle, timestamp: float) -> None:
-    """Live white hands and a red seconds needle over the contour dial."""
+    """Compact analog clock in the upper-left, with digital time beneath."""
     if rect.width <= 0 or rect.height <= 0:
       return
     w, h = rect.width, rect.height
-    cx, cy = rect.x + w / 2, rect.y + h / 2
-    white = rl.Color(250, 250, 245, 255)
+    unit = min(w, h)
+    cx, cy = rect.x + w * 0.14, rect.y + h * 0.17
+    radius = unit * 0.085
+    white = rl.Color(225, 230, 238, 235)
     red = rl.Color(244, 48, 40, 255)
     hour, minute, second = ConfidenceBall._clock_angles(timestamp)
 
-    def point(angle, length):
-      return rl.Vector2(cx + math.cos(angle) * w * 0.445 * length,
-                        cy + math.sin(angle) * h * 0.42 * length)
+    rl.draw_circle_lines(int(cx), int(cy), radius, rl.Color(205, 214, 226, 210))
+    for tick in range(12):
+      angle = tick * math.tau / 12 - math.pi / 2
+      inner = radius * 0.82
+      outer = radius * (0.94 if tick % 3 == 0 else 0.88)
+      rl.draw_line_ex(rl.Vector2(cx + math.cos(angle) * inner, cy + math.sin(angle) * inner),
+                      rl.Vector2(cx + math.cos(angle) * outer, cy + math.sin(angle) * outer),
+                      max(1.0, unit * 0.003), white)
 
-    # Rounded, broad white hands with narrow stems like the reference.
-    for angle, length, thickness in ((hour, 0.49, h * 0.026), (minute, 0.76, h * 0.021)):
-      root, start, end = point(angle, 0.0), point(angle, 0.12), point(angle, length)
-      rl.draw_line_ex(root, end, thickness + 3, rl.BLACK)
-      rl.draw_line_ex(root, end, max(1, thickness * 0.42), white)
-      rl.draw_line_ex(start, end, thickness, white)
-      rl.draw_circle_v(start, thickness / 2, white)
-      rl.draw_circle_v(end, thickness / 2, white)
-    rl.draw_line_ex(point(second, -0.12), point(second, 0.86), max(1, h * 0.003), red)
-    rl.draw_circle_v(rl.Vector2(cx, cy), h * 0.013, white)
-    rl.draw_circle_v(rl.Vector2(cx, cy), h * 0.009, red)
-    rl.draw_circle_v(rl.Vector2(cx, cy), h * 0.004, rl.BLACK)
+    def hand_point(angle: float, length: float) -> rl.Vector2:
+      return rl.Vector2(cx + math.cos(angle) * radius * length,
+                        cy + math.sin(angle) * radius * length)
+
+    for angle, length, thickness in ((hour, 0.48, unit * 0.008), (minute, 0.72, unit * 0.006)):
+      rl.draw_line_ex(rl.Vector2(cx, cy), hand_point(angle, length), thickness, white)
+    rl.draw_line_ex(hand_point(second, -0.18), hand_point(second, 0.82),
+                    max(1.0, unit * 0.002), red)
+    rl.draw_circle_v(rl.Vector2(cx, cy), unit * 0.006, white)
+
+    local = datetime.fromtimestamp(timestamp, CLOCK_TIMEZONE)
+    digital_time = local.strftime("%I:%M").lstrip("0")
+    font = gui_app.font(FontWeight.DISPLAY_REGULAR)
+    size = h * 0.06
+    measured = rl.measure_text_ex(font, digital_time, size, 0)
+    rl.draw_text_ex(font, digital_time,
+                    rl.Vector2(cx - measured.x / 2, cy + radius + h * 0.018),
+                    size, 0, white)
 
   @staticmethod
   def _draw_date(rect: rl.Rectangle, timestamp: float) -> None:
