@@ -37,7 +37,7 @@ except ImportError:
       return round(max(0.0, min(1.0, -accel / 4.0)) * 100)
 
     def render_at(self, center_x: float, center_y: float, radius: float, percent: int,
-                  show_readout: bool = True) -> None:
+                  show_readout: bool = True, readout_position: tuple[float, float] | None = None) -> None:
       percent = max(0, min(100, percent))
       active = percent > 0
       center = rl.Vector2(center_x, center_y)
@@ -63,13 +63,6 @@ except ImportError:
       minutes = now.minute + seconds / 60.0
       hours = now.hour % 12 + minutes / 60.0
       hand_angles = (-90 + hours * 30, -90 + minutes * 6, -90 + seconds * 6)
-      for tick in range(12):
-        angle = math.radians(-90 + tick * 30)
-        tick_start = rl.Vector2(center_x + math.cos(angle) * radius * 0.66,
-                                center_y + math.sin(angle) * radius * 0.66)
-        tick_end = rl.Vector2(center_x + math.cos(angle) * radius * 0.72,
-                              center_y + math.sin(angle) * radius * 0.72)
-        rl.draw_line_ex(tick_start, tick_end, max(1.0, radius * 0.008), rl.Color(145, 150, 160, 210))
       hands = ((hand_angles[0], 0.36, max(3.0, radius * 0.035), rl.WHITE),
                (hand_angles[1], 0.54, max(2.0, radius * 0.022), rl.WHITE),
                (hand_angles[2], 0.54, max(1.5, radius * 0.010), rl.Color(255, 45, 58, 255)))
@@ -83,21 +76,14 @@ except ImportError:
       value = f"{percent}%"
       value_font_size = max(30.0, radius * 0.32)
       value_size = rl.measure_text_ex(font, value, value_font_size, 0)
-      value_pos = rl.Vector2(center_x - value_size.x / 2,
-                             center_y + radius * 0.10 - value_size.y / 2)
+      value_pos = rl.Vector2(center_x - value_size.x / 2, center_y + radius * 0.10 - value_size.y / 2)
+      if readout_position is not None:
+        value_pos = rl.Vector2(readout_position[0] - value_size.x / 2, readout_position[1])
       value_color = rl.WHITE if active else rl.Color(145, 149, 157, 255)
       if active:
         rl.draw_text_ex(font, value, rl.Vector2(value_pos.x + 2, value_pos.y + 2),
                         value_font_size, 0, rl.BLACK)
       rl.draw_text_ex(font, value, value_pos, value_font_size, 0, value_color)
-      label = "BRAKE"
-      label_size = max(18.0, radius * 0.14)
-      label_font = gui_app.font(FontWeight.SEMI_BOLD)
-      measured = rl.measure_text_ex(label_font, label, label_size, 0)
-      label_pos = rl.Vector2(center_x - measured.x / 2,
-                             center_y + radius * 0.52 - measured.y / 2)
-      label_color = rl.Color(125, 130, 138, 220) if not active else rl.Color(185, 190, 200, 230)
-      rl.draw_text_ex(label_font, label, label_pos, label_size, 0, label_color)
 try:
   from openpilot.selfdrive.ui.mici.onroad.stock_confidence_ball import ConfidenceBall as StockConfidenceBall
 except ImportError:
@@ -131,7 +117,7 @@ CAMERA_OFFSET_SYMBOL_FONT_SIZE = 58
 SPEEDOMETER_VALUE_FONT_SIZE = 112
 SPEEDOMETER_UNIT_FONT_SIZE = 36
 SPEEDOMETER_CENTER_X = 0.085  # Match the stock set-speed slot at the upper left.
-SPEEDOMETER_CENTER_Y = 0.17  # Match the stock set-speed slot at the upper left.
+SPEEDOMETER_CENTER_Y = 0.17  # Adjusted at render time to align with the brake gauge top.
 SPEEDOMETER_UNIT_GAP = 6  # Pixels between the value and unit.
 # LARGE CENTERED SPEEDOMETER - selected by a 0.6-second long press.
 SPEEDOMETER_LARGE_VALUE_FONT_SIZE = 224
@@ -530,8 +516,12 @@ class AugmentedRoadView(CameraView):
       value_size, unit_size = SPEEDOMETER_VALUE_FONT_SIZE, SPEEDOMETER_UNIT_FONT_SIZE
       x_fraction, y_fraction = SPEEDOMETER_CENTER_X, SPEEDOMETER_CENTER_Y
     center_x = rect.x + rect.width * x_fraction
-    center_y = rect.y + rect.height * y_fraction
     total_height = value_size + SPEEDOMETER_UNIT_GAP + unit_size
+    if self._speedometer_large:
+      center_y = rect.y + rect.height * y_fraction
+    else:
+      brake_radius = min(rect.width * 0.23, rect.height * 0.43)
+      center_y = rect.y + rect.height * 0.52 - brake_radius * 0.98 + total_height / 2
     y = center_y - total_height / 2
     for label, size, weight in (
       (str(round(self._hud_renderer.speed)), value_size, FontWeight.DISPLAY),
@@ -596,6 +586,9 @@ class AugmentedRoadView(CameraView):
         min(self._content_rect.width * 0.23, self._content_rect.height * 0.43),
         self._brake_pressure.brake_percent(),
         show_readout=not offset_controls_visible,
+        readout_position=(self._content_rect.x + self._content_rect.width * 0.86,
+                          self._content_rect.y + self._content_rect.height * 0.52 -
+                          min(self._content_rect.width * 0.23, self._content_rect.height * 0.43) * 0.98),
       )
       self._draw_touch_controls()
 
