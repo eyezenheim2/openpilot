@@ -569,18 +569,16 @@ class AugmentedRoadView(CameraView):
                                  top + height - state_measured.y - 8),
                       state_size, 0, color)
 
-    arrow_size = min(74.0, height * 0.42)
-    arrow_y = top + height / 2
-    arrow_color = rl.Color(0, 220, 80, 255)
+    symbol_color = rl.Color(0, 220, 80, 255)
     if steer_ratio_visible and not self._hud_renderer.steer_ratio_adjustment_allowed():
-      arrow_color = rl.Color(90, 105, 95, 255)
-    left_x, right_x = rect.x + rect.width * 0.28, rect.x + rect.width * 0.72
-    rl.draw_triangle(rl.Vector2(left_x - arrow_size / 2, arrow_y),
-                     rl.Vector2(left_x + arrow_size / 2, arrow_y - arrow_size / 2),
-                     rl.Vector2(left_x + arrow_size / 2, arrow_y + arrow_size / 2), arrow_color)
-    rl.draw_triangle(rl.Vector2(right_x + arrow_size / 2, arrow_y),
-                     rl.Vector2(right_x - arrow_size / 2, arrow_y + arrow_size / 2),
-                     rl.Vector2(right_x - arrow_size / 2, arrow_y - arrow_size / 2), arrow_color)
+      symbol_color = rl.Color(110, 120, 115, 255)
+    symbol_size = min(CAMERA_OFFSET_SYMBOL_FONT_SIZE, height * 0.42)
+    for symbol, x in (("−", rect.x + rect.width * 0.28),
+                       ("+", rect.x + rect.width * 0.72)):
+      measured = rl.measure_text_ex(font, symbol, symbol_size, 0)
+      rl.draw_text_ex(font, symbol,
+                      rl.Vector2(x - measured.x / 2, top + (height - measured.y) / 2),
+                      symbol_size, 0, symbol_color)
 
   def _draw_speedometer(self):
     if not self._speedometer_visible:
