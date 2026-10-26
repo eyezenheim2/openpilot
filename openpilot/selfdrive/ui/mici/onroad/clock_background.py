@@ -186,22 +186,22 @@ class ClockBackground:
     rl.draw_text_ex(date_font, date_label, date_pos, number_size, 0, rl.WHITE)
 
     if draw_small_clock:
-      # Minimal analog clock hands beside the date, with no dial or numeric labels.
-      hand_radius = rect.height * 0.135
-      date_right = center_x + date_width / 2
-      hud_right = rect.x + rect.width
-      hand_center_x = (date_right + hud_right) / 2
-      hand_center_y = date_y + number_size * 0.51
-      hour_angle = math.tau * ((local.hour % 12) + local.minute / 60) / 12 - math.pi / 2
-      minute_angle = math.tau * local.minute / 60 - math.pi / 2
-      for angle, length, thickness, color in ((hour_angle, hand_radius * 0.58, rect.height * 0.018, rl.WHITE),
-                                              (minute_angle, hand_radius * 0.92, rect.height * 0.012, rl.Color(210, 215, 225, 255))):
-        end = rl.Vector2(hand_center_x + math.cos(angle) * length,
-                         hand_center_y + math.sin(angle) * length)
+      # Place the small analog clock where the steering-wheel icon sat.
+      hand_radius = min(26.0, rect.height * 0.06)
+      hand_center_x = rect.x + 21 + 25
+      hand_center_y = rect.y + rect.height - 14 - 25
+      seconds = local.second + local.microsecond / 1_000_000
+      minutes = local.minute + seconds / 60.0
+      hours = local.hour % 12 + minutes / 60.0
+      hands = ((-90 + hours * 30, 0.55, rect.height * 0.009, rl.WHITE),
+               (-90 + minutes * 6, 0.92, rect.height * 0.006, rl.WHITE),
+               (-90 + seconds * 6, 0.92, rect.height * 0.003, rl.Color(255, 45, 58, 255)))
+      for angle, length, thickness, color in hands:
+        end = rl.Vector2(hand_center_x + math.cos(math.radians(angle)) * hand_radius * length,
+                         hand_center_y + math.sin(math.radians(angle)) * hand_radius * length)
         rl.draw_line_ex(rl.Vector2(hand_center_x + 1, hand_center_y + 1),
                         rl.Vector2(end.x + 1, end.y + 1), thickness + 1, rl.BLACK)
         rl.draw_line_ex(rl.Vector2(hand_center_x, hand_center_y), end, thickness, color)
-  
     weekday_font = gui_app.font(FontWeight.SEMI_BOLD)
     weekday_width = rl.measure_text_ex(weekday_font, weekday, weekday_size, 0).x
     weekday_pos = rl.Vector2(center_x - weekday_width / 2, date_y + number_size + gap)
