@@ -224,6 +224,7 @@ class BookmarkIcon(Widget):
 
 
 
+
   def _render(self, _):
     """Render the bookmark icon."""
     if self._offset_filter.x > 0:
@@ -606,19 +607,16 @@ class AugmentedRoadView(CameraView):
     rl.draw_text_ex(font, label, rl.Vector2(pos.x + 2, pos.y + 2), value_size, 0, rl.BLACK)
     rl.draw_text_ex(font, label, pos, value_size, 0, rl.WHITE)
 
-  def _draw_center_brake_pressure_percentage(self):
+  def _draw_center_brake_pressure_percentage(self, percent: int):
     rect = self._content_rect
-    percent = self._brake_pressure.brake_percent()
     text = f"{percent}%"
     font_size = rect.height * 0.22
     font = gui_app.font(FontWeight.DISPLAY)
     measured = rl.measure_text_ex(font, text, font_size, 0)
     pos = rl.Vector2(rect.x + (rect.width - measured.x) / 2,
                      rect.y + (rect.height - measured.y) / 2)
-    color = rl.WHITE if percent > 0 else rl.Color(145, 149, 157, 255)
     rl.draw_text_ex(font, text, rl.Vector2(pos.x + 3, pos.y + 3), font_size, 0, rl.BLACK)
-    rl.draw_text_ex(font, text, pos, font_size, 0, color)
-
+    rl.draw_text_ex(font, text, pos, font_size, 0, rl.WHITE)
   def _render(self, _):
     # Offroad retains the normal startup/status screen.
     if not ui_state.started:
@@ -664,7 +662,6 @@ class AugmentedRoadView(CameraView):
     # Draw the full HUD clock background; the pressure graph is drawn by TorqueBar.
     if not self._stock_hud:
       self._clock_background.draw_hud_face(self._content_rect)
-      self._draw_touch_controls()
       self._draw_calibration_reset()
 
     alert_to_render, _ = self._alert_renderer.will_render()
@@ -673,13 +670,16 @@ class AugmentedRoadView(CameraView):
     self._hud_renderer.set_can_draw_top_icons((self._stock_hud or self._speedometer_visible) and alert_to_render is None)
     self._hud_renderer.set_wheel_critical_icon(False)
     self._hud_renderer.set_steer_ratio_controls_visible(rl.get_time() < self._steer_ratio_controls_until)
-    self._hud_renderer.set_brake_pressure_percent(None if self._stock_hud else self._brake_pressure.brake_percent())
+    brake_percent = self._brake_pressure.brake_percent()
+    self._hud_renderer.set_brake_pressure_percent(brake_percent, enabled=not self._stock_hud)
     self._hud_renderer.render(self._content_rect)
-    if not self._stock_hud:
-      self._draw_center_brake_pressure_percentage()
+    if not self._stock_hud and brake_percent > 0:
+      self._draw_center_brake_pressure_percentage(brake_percent)
     if not self._stock_hud:
       self._draw_speedometer()
     self._alert_renderer.render(self._content_rect)
+    if not self._stock_hud:
+      self._draw_touch_controls()
 
     # Draw fake rounded border
     rl.draw_rectangle_rounded_lines_ex(self._content_rect, 0.2 * 1.02, 10, 50, rl.BLACK)
