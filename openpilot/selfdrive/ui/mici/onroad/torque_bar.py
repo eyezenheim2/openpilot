@@ -155,10 +155,12 @@ class TorqueBar(Widget):
     self._always = always
     self._torque_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
     self._torque_line_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
-    self._brake_pressure_percent: float | None = None
+    self._brake_pressure_percent = 0.0
+    self._brake_pressure_mode = False
 
-  def set_brake_pressure_percent(self, percent: int | None) -> None:
-    self._brake_pressure_percent = None if percent is None else max(0.0, min(100.0, float(percent)))
+  def set_brake_pressure_percent(self, percent: int | None, enabled: bool = True) -> None:
+    self._brake_pressure_mode = enabled
+    self._brake_pressure_percent = 0.0 if percent is None else max(0.0, min(100.0, float(percent)))
 
   def update_filter(self, value: float):
     """Update the torque filter value (for demo mode)."""
@@ -194,17 +196,23 @@ class TorqueBar(Widget):
       self._torque_filter.update(-ui_state.sm['carOutput'].actuatorsOutput.torque)
 
   def _render(self, rect: rl.Rectangle) -> None:
-    if self._brake_pressure_percent is not None:
-      bar_height = max(18.0, min(32.0, rect.height * 0.05))
+    if self._brake_pressure_mode:
+      if self._brake_pressure_percent <= 0:
+        return
+      pressure = self._brake_pressure_percent / 100.0
+      # Match the stock torque indicator: the graph thickens as demand rises
+      # and shifts toward orange near the upper end of its range.
+      bar_height = np.interp(pressure, [0.0, 1.0], [12.0, 56.0]) * self._scale
       bar_y = rect.y + rect.height * 0.68 - bar_height / 2
       bar_rect = rl.Rectangle(rect.x, bar_y, rect.width, bar_height)
       rl.draw_rectangle_rounded(bar_rect, 0.5, 8, rl.Color(90, 96, 105, 190))
-      filled_width = rect.width * self._brake_pressure_percent / 100.0
+      filled_width = rect.width * pressure
+      orange_shift = max(0.0, pressure - 0.75) * 4.0
+      fill_color = blend_colors(rl.Color(255, 170, 0, 255), rl.Color(255, 105, 0, 255), orange_shift)
       if filled_width > 0:
         fill_rect = rl.Rectangle(rect.x, bar_y, filled_width, bar_height)
-        rl.draw_rectangle_rounded(fill_rect, 0.5, 8, rl.Color(255, 35, 75, 255))
+        rl.draw_rectangle_rounded(fill_rect, 0.5, 8, fill_color)
       return
-
     # adjust y pos with torque
     torque_line_offset = np.interp(abs(self._torque_filter.x), [0.5, 1], [22 * self._scale, 26 * self._scale])
     torque_line_height = np.interp(abs(self._torque_filter.x), [0.5, 1], [14 * self._scale, 56 * self._scale])
