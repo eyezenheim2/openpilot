@@ -155,6 +155,10 @@ class TorqueBar(Widget):
     self._always = always
     self._torque_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
     self._torque_line_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
+    self._brake_pressure_percent: float | None = None
+
+  def set_brake_pressure_percent(self, percent: int | None) -> None:
+    self._brake_pressure_percent = None if percent is None else max(0.0, min(100.0, float(percent)))
 
   def update_filter(self, value: float):
     """Update the torque filter value (for demo mode)."""
@@ -190,6 +194,17 @@ class TorqueBar(Widget):
       self._torque_filter.update(-ui_state.sm['carOutput'].actuatorsOutput.torque)
 
   def _render(self, rect: rl.Rectangle) -> None:
+    if self._brake_pressure_percent is not None:
+      bar_height = max(18.0, min(32.0, rect.height * 0.05))
+      bar_y = rect.y + rect.height * 0.68 - bar_height / 2
+      bar_rect = rl.Rectangle(rect.x, bar_y, rect.width, bar_height)
+      rl.draw_rectangle_rounded(bar_rect, 0.5, 8, rl.Color(90, 96, 105, 190))
+      filled_width = rect.width * self._brake_pressure_percent / 100.0
+      if filled_width > 0:
+        fill_rect = rl.Rectangle(rect.x, bar_y, filled_width, bar_height)
+        rl.draw_rectangle_rounded(fill_rect, 0.5, 8, rl.Color(255, 35, 75, 255))
+      return
+
     # adjust y pos with torque
     torque_line_offset = np.interp(abs(self._torque_filter.x), [0.5, 1], [22 * self._scale, 26 * self._scale])
     torque_line_height = np.interp(abs(self._torque_filter.x), [0.5, 1], [14 * self._scale, 56 * self._scale])
