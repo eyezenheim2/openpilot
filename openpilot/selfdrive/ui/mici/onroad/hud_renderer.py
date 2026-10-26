@@ -1,854 +1,468 @@
 import math
-from datetime import datetime
-import numpy as np
+from dataclasses import dataclass
+from pathlib import Path
+
 import pyray as rl
-from openpilot.cereal import log
-from opendbc.car.structs import car
-from openpilot.cereal.visionipc import VisionStreamType
-from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
-from openpilot.selfdrive.ui.lib.dm_hud_toggle import DmHudToggle
-from openpilot.selfdrive.ui.mici.onroad import SIDE_PANEL_WIDTH
-from openpilot.selfdrive.ui.mici.onroad.alert_renderer import AlertRenderer
-from openpilot.selfdrive.ui.sunnypilot.onroad.clock_background import ClockBackground
-from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
-from openpilot.selfdrive.ui.mici.onroad.model_renderer import ModelRenderer
-from openpilot.selfdrive.ui.mici.onroad.confidence_ball import ConfidenceBall
-from openpilot.selfdrive.ui.mici.onroad.cameraview import CameraView
-from openpilot.system.ui.lib.application import FontWeight, gui_app, MousePos, MouseEvent, TextAlignment, TextAlignmentVertical
-from openpilot.system.ui.widgets.label import UnifiedLabel
+from openpilot.common.constants import CV
+from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
+from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus, ChestnutState
+from openpilot.system.ui.lib.application import gui_app, FontWeight
+from openpilot.system.ui.lib.multilang import tr
+from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
-from openpilot.common.filter_simple import BounceFilter
-from openpilot.common.transformations.camera import DEVICE_CAMERAS, DeviceCameraConfig, view_frame_from_device_frame
-from openpilot.common.transformations.orientation import rot_from_euler
-from enum import IntEnum
+from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.cereal import log
 
-if gui_app.sunnypilot_ui():
-  from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_renderer import HudRendererSP as HudRenderer
-  from openpilot.selfdrive.ui.sunnypilot.ui_state import OnroadTimerStatus
-try:
-  from openpilot.selfdrive.ui.mici.onroad.brake_pressure_ball import BrakePressureBall
-except ImportError:
-  class BrakePressureBall:
-    @staticmethod
-    def brake_percent() -> int:
-      accel = float(ui_state.sm["carControl"].actuators.accel)
-      if not math.isfinite(accel):
-        return 0
-      return round(max(0.0, min(1.0, -accel / 4.0)) * 100)
+EventName = log.OnroadEvent.EventName
 
-    def render_at(self, center_x: float, center_y: float, radius: float, percent: int,
-                  show_readout: bool = True, readout_position: tuple[float, float] | None = None) -> None:
-      percent = max(0, min(100, percent))
-      active = percent > 0
-      center = rl.Vector2(center_x, center_y)
-      inner_radius, outer_radius = radius * 0.82, radius * 0.98
-      track_color = rl.Color(75, 78, 84, 220) if not active else rl.Color(105, 105, 105, 255)
-      brake_color = rl.Color(255, 35, 75, 255)
-      end_angle = -90 + 360 * percent / 100
-      rl.draw_circle_v(center, radius + 5, rl.Color(45, 45, 45, 255))
-      rl.draw_ring(center, inner_radius, outer_radius, 0, 360, 96, track_color)
-      if active:
-        rl.draw_ring(center, inner_radius, outer_radius, -90, end_angle,
-                     max(2, round(96 * percent / 100)), brake_color)
-        cap_radius = (outer_radius - inner_radius) / 2
-        cap_distance = (outer_radius + inner_radius) / 2
-        cap_angle = math.radians(end_angle)
-        rl.draw_circle_v(rl.Vector2(center_x + math.cos(cap_angle) * cap_distance,
-                                    center_y + math.sin(cap_angle) * cap_distance),
-                         cap_radius, brake_color)
-      inner_color = rl.Color(24, 25, 29, 235) if not active else rl.Color(28, 28, 28, 255)
-      rl.draw_circle_v(center, radius * 0.76, inner_color)
-      now = datetime.now().astimezone()
-      seconds = now.second + now.microsecond / 1_000_000
-      minutes = now.minute + seconds / 60.0
-      hours = now.hour % 12 + minutes / 60.0
-      hand_angles = (-90 + hours * 30, -90 + minutes * 6, -90 + seconds * 6)
-      hands = ((hand_angles[0], 0.36, max(3.0, radius * 0.035), rl.WHITE),
-               (hand_angles[1], 0.54, max(2.0, radius * 0.022), rl.WHITE),
-               (hand_angles[2], 0.54, max(1.5, radius * 0.010), rl.Color(255, 45, 58, 255)))
-      for angle, length, thickness, hand_color in hands:
-        end = rl.Vector2(center_x + math.cos(math.radians(angle)) * radius * length,
-                         center_y + math.sin(math.radians(angle)) * radius * length)
-        rl.draw_line_ex(center, end, thickness, hand_color)
-      if not show_readout:
+# Constants
+SET_SPEED_NA = 255
+KM_TO_MILE = 0.621371
+CRUISE_DISABLED_CHAR = '–'
+
+SET_SPEED_PERSISTENCE = 2.5  # seconds
+FIXED_STEER_RATIO_PATH = Path("/data/params/FixedSteerRatio")
+STEER_RATIO_STEP = 0.1
+STEER_RATIO_MIN_FACTOR = 0.75
+STEER_RATIO_MAX_FACTOR = 1.25
+STEER_RATIO_ABSOLUTE_MAX = 23.33
+STEER_RATIO_MAX_ADJUST_SPEED = 0.1
+
+
+@dataclass(frozen=True)
+class FontSizes:
+  current_speed: int = 300
+  speed_unit: int = 1
+  max_speed: int = 36
+  set_speed: int = 112
+
+
+@dataclass(frozen=True)
+class Colors:
+  WHITE = rl.WHITE
+  WHITE_TRANSLUCENT = rl.Color(255, 255, 255, 200)
+
+
+FONT_SIZES = FontSizes()
+COLORS = Colors()
+
+
+class TurnIntent(Widget):
+  FADE_IN_ANGLE = 30  # degrees
+
+  def __init__(self):
+    super().__init__()
+    self._pre = False
+    self._turn_intent_direction: int = 0
+
+    self._turn_intent_alpha_filter = FirstOrderFilter(0, 0.05, 1 / gui_app.target_fps)
+    self._turn_intent_rotation_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
+
+    self._txt_turn_intent_left: rl.Texture = gui_app.texture('icons_mici/turn_intent_left.png', 50, 20)
+    self._txt_turn_intent_right: rl.Texture = gui_app.texture('icons_mici/turn_intent_left.png', 50, 20, flip_x=True)
+
+  def _render(self, _):
+    if self._turn_intent_alpha_filter.x > 1e-2:
+      turn_intent_texture = self._txt_turn_intent_right if self._turn_intent_direction == 1 else self._txt_turn_intent_left
+      src_rect = rl.Rectangle(0, 0, turn_intent_texture.width, turn_intent_texture.height)
+      dest_rect = rl.Rectangle(self._rect.x + self._rect.width / 2, self._rect.y + self._rect.height / 2,
+                               turn_intent_texture.width, turn_intent_texture.height)
+
+      origin = (turn_intent_texture.width / 2, self._rect.height / 2)
+      color = rl.Color(255, 255, 255, int(255 * self._turn_intent_alpha_filter.x))
+      rl.draw_texture_pro(turn_intent_texture, src_rect, dest_rect, origin, self._turn_intent_rotation_filter.x, color)
+
+  def _update_state(self) -> None:
+    sm = ui_state.sm
+
+    left = any(e.name == EventName.preLaneChangeLeft for e in sm['onroadEvents'])
+    right = any(e.name == EventName.preLaneChangeRight for e in sm['onroadEvents'])
+    if left or right:
+      # pre lane change
+      if not self._pre:
+        self._turn_intent_rotation_filter.x = self.FADE_IN_ANGLE if left else -self.FADE_IN_ANGLE
+
+      self._pre = True
+      self._turn_intent_direction = -1 if left else 1
+      self._turn_intent_alpha_filter.update(1)
+      self._turn_intent_rotation_filter.update(0)
+    elif any(e.name == EventName.laneChange for e in sm['onroadEvents']):
+      # fade out and rotate away
+      self._pre = False
+      self._turn_intent_alpha_filter.update(0)
+
+      if self._turn_intent_direction == 0:
+        # unknown. missed pre frame?
+        self._turn_intent_rotation_filter.update(0)
+      else:
+        self._turn_intent_rotation_filter.update(self._turn_intent_direction * self.FADE_IN_ANGLE)
+    else:
+      # didn't complete lane change, just hide
+      self._pre = False
+      self._turn_intent_direction = 0
+      self._turn_intent_alpha_filter.update(0)
+      self._turn_intent_rotation_filter.update(0)
+
+
+class SteerRatioButton(Widget):
+  def __init__(self, label: str, callback):
+    super().__init__()
+    self._label = label
+    self.active = False
+    self.set_click_callback(callback)
+    self._font = gui_app.font(FontWeight.SEMI_BOLD)
+
+  def _render(self, rect: rl.Rectangle) -> None:
+    center = rl.Vector2(rect.x + rect.width / 2, rect.y + rect.height / 2)
+    if self._label in ("+", "-"):
+      radius = min(rect.width, rect.height) / 2
+      fill = rl.Color(0, 210, 80, 255) if self.enabled else rl.Color(72, 78, 84, 220)
+      if self.is_pressed and self.enabled:
+        fill = rl.Color(0, 165, 60, 255)
+      rl.draw_circle_v(center, radius, fill)
+      rl.draw_circle_lines(int(center.x), int(center.y), radius, rl.Color(255, 255, 255, 120))
+    else:
+      if self.enabled:
+        fill = rl.Color(0, 190, 72, 240) if self.active else rl.Color(0, 118, 48, 235)
+      else:
+        fill = rl.Color(50, 56, 63, 225)
+      if self.is_pressed and self.enabled:
+        fill = rl.Color(0, 150, 55, 255)
+      rl.draw_rectangle_rounded(rect, 0.35, 8, fill)
+
+    size = min(rect.height * (0.46 if self._label in ("+", "-") else 0.34), 42)
+    measured = rl.measure_text_ex(self._font, self._label, size, 0)
+    rl.draw_text_ex(self._font, self._label,
+                    rl.Vector2(center.x - measured.x / 2, center.y - measured.y / 2),
+                    size, 0, rl.WHITE if self.enabled else rl.Color(175, 180, 188, 255))
+
+
+class HudRenderer(Widget):
+  def __init__(self):
+    super().__init__()
+    """Initialize the HUD renderer."""
+    self.is_cruise_set: bool = False
+    self.is_cruise_available: bool = True
+    self.set_speed: float = SET_SPEED_NA
+    self._set_speed_changed_time: float = 0
+    self.speed: float = 0.0
+    self.v_ego_cluster_seen: bool = False
+    self._engaged: bool = False
+    self._chestnut_fade_time: float = 0
+
+    self._can_draw_top_icons = True
+    self._show_wheel_critical = False
+    self._show_steering_wheel = True
+
+    self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
+    self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
+    self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
+    self._font_display: rl.Font = gui_app.font(FontWeight.DISPLAY)
+
+    self._turn_intent = TurnIntent()
+    self._torque_bar = TorqueBar()
+
+    self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/wheel.png', 50, 50)
+    self._txt_wheel_critical: rl.Texture = gui_app.texture('icons_mici/wheel_critical.png', 50, 50)
+    self._txt_exclamation_point: rl.Texture = gui_app.texture('icons_mici/exclamation_point.png', 9, 44)
+    self._txt_chestnut: rl.Texture = gui_app.texture('icons_mici/chestnut.png', 60, 44)
+    self._txt_chestnut_green: rl.Texture = gui_app.texture('icons_mici/chestnut_green.png', 60, 44)
+    self._txt_chestnut_orange: rl.Texture = gui_app.texture('icons_mici/chestnut_orange.png', 75, 44)
+    self._chestnut_icon: rl.Texture | None = None
+    self._wheel_alpha_filter = FirstOrderFilter(0, 0.05, 1 / gui_app.target_fps)
+    self._wheel_y_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
+
+    self._set_speed_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
+    self._chestnut_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
+
+    try:
+      stock_ratio = float(ui_state.sm['carParams'].steerRatio)
+    except (AttributeError, TypeError, ValueError):
+      stock_ratio = 15.0
+    self._stock_steer_ratio = stock_ratio if stock_ratio > 0 else 15.0
+    self._fixed_steer_ratio = self._stock_steer_ratio
+    self._steer_ratio_enabled = False
+    self._steer_ratio_controls_visible = False
+    self._read_fixed_steer_ratio()
+    self._steer_ratio_toggle = self._child(SteerRatioButton("FIXED STEER RATIO: OFF", self._toggle_steer_ratio))
+    self._steer_ratio_buttons = {
+      label: self._child(SteerRatioButton(label, lambda label=label: self._adjust_steer_ratio(label)))
+      for label in ("-", "+")
+    }
+
+  def set_show_steering_wheel(self, show: bool) -> None:
+    self._show_steering_wheel = show
+
+  def set_steer_ratio_controls_visible(self, visible: bool) -> None:
+    self._steer_ratio_controls_visible = visible
+
+  def steer_ratio_value(self) -> float:
+    return self._fixed_steer_ratio
+
+  def steer_ratio_enabled(self) -> bool:
+    return self._steer_ratio_enabled
+
+  def steer_ratio_adjustment_allowed(self) -> bool:
+    return self._steer_ratio_adjustment_allowed()
+
+  def toggle_steer_ratio(self) -> None:
+    self._toggle_steer_ratio()
+
+  def adjust_steer_ratio(self, direction: str) -> None:
+    self._adjust_steer_ratio(direction)
+
+  def set_wheel_critical_icon(self, critical: bool):
+    """Set the wheel icon to critical or normal state."""
+    self._show_wheel_critical = critical
+
+  def set_can_draw_top_icons(self, can_draw_top_icons: bool):
+    """Set whether to draw the top part of the HUD."""
+    self._can_draw_top_icons = can_draw_top_icons
+
+  def drawing_top_icons(self) -> bool:
+    # whether we're drawing any top icons currently
+    return bool(self._set_speed_alpha_filter.x > 1e-2)
+
+  def _update_state(self) -> None:
+    """Update HUD state based on car state and controls state."""
+    sm = ui_state.sm
+    if sm.recv_frame["carState"] < ui_state.started_frame:
+      self.is_cruise_set = False
+      self.set_speed = SET_SPEED_NA
+      self.speed = 0.0
+      return
+
+    controls_state = sm['controlsState']
+    car_state = sm['carState']
+
+    v_cruise_cluster = car_state.vCruiseCluster
+    set_speed = (
+      controls_state.deprecated.vCruise if v_cruise_cluster == 0.0 else v_cruise_cluster
+    )
+    engaged = sm['selfdriveState'].enabled
+    if (set_speed != self.set_speed and engaged) or (engaged and not self._engaged):
+      self._set_speed_changed_time = rl.get_time()
+    if engaged != self._engaged:
+      self._chestnut_fade_time = rl.get_time() if engaged else 0
+    self._engaged = engaged
+    self.set_speed = set_speed
+    self.is_cruise_set = 0 < self.set_speed < SET_SPEED_NA
+    self.is_cruise_available = self.set_speed != -1
+
+    v_ego_cluster = car_state.vEgoCluster
+    self.v_ego_cluster_seen = self.v_ego_cluster_seen or v_ego_cluster != 0.0
+    v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
+    speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
+    self.speed = max(0.0, v_ego * speed_conversion)
+
+  def _render(self, rect: rl.Rectangle) -> None:
+    """Render HUD elements to the screen."""
+
+    self._torque_bar.render(rect)
+
+    if self.is_cruise_set:
+      self._draw_set_speed(rect)
+
+    self._draw_model_source(rect)
+
+    self._draw_steering_wheel(rect)
+    self._draw_steer_ratio_controls(rect)
+
+  def _read_fixed_steer_ratio(self) -> None:
+    try:
+      ratio_text = FIXED_STEER_RATIO_PATH.read_text().strip()
+      ratio = float(ratio_text)
+    except (OSError, TypeError, ValueError):
+      return
+    self._fixed_steer_ratio = self._clamp_steer_ratio(ratio)
+    self._steer_ratio_enabled = True
+
+  def _clamp_steer_ratio(self, ratio: float) -> float:
+    lower = min(self._stock_steer_ratio * STEER_RATIO_MIN_FACTOR, STEER_RATIO_ABSOLUTE_MAX)
+    upper = max(lower, min(self._stock_steer_ratio * STEER_RATIO_MAX_FACTOR, STEER_RATIO_ABSOLUTE_MAX))
+    return max(lower, min(ratio, upper))
+
+  def _steer_ratio_adjustment_allowed(self) -> bool:
+    sm = ui_state.sm
+    return (sm.valid['carState'] and sm.valid['carControl'] and
+            sm['carState'].vEgo <= STEER_RATIO_MAX_ADJUST_SPEED and
+            not sm['carControl'].enabled)
+
+  def _toggle_steer_ratio(self) -> None:
+    if not self._steer_ratio_adjustment_allowed():
+      return
+    if self._steer_ratio_enabled:
+      if not self._write_fixed_steer_ratio(""):
         return
-      font = gui_app.font(FontWeight.DISPLAY)
-      value = f"{percent}%"
-      value_font_size = max(30.0, radius * 0.32)
-      value_size = rl.measure_text_ex(font, value, value_font_size, 0)
-      value_pos = rl.Vector2(center_x - value_size.x / 2, center_y + radius * 0.10 - value_size.y / 2)
-      if readout_position is not None:
-        value_pos = rl.Vector2(readout_position[0] - value_size.x / 2, readout_position[1])
-      value_color = rl.WHITE if active else rl.Color(145, 149, 157, 255)
-      if active:
-        rl.draw_text_ex(font, value, rl.Vector2(value_pos.x + 2, value_pos.y + 2),
-                        value_font_size, 0, rl.BLACK)
-      rl.draw_text_ex(font, value, value_pos, value_font_size, 0, value_color)
-try:
-  from openpilot.selfdrive.ui.mici.onroad.stock_confidence_ball import ConfidenceBall as StockConfidenceBall
-except ImportError:
-  # The legacy side confidence dot is optional; keep the Mici HUD bootable
-  # on installs that don't include its separate renderer module.
-  StockConfidenceBall = ConfidenceBall
+      self._steer_ratio_enabled = False
+      self._fixed_steer_ratio = self._stock_steer_ratio
+    else:
+      self._fixed_steer_ratio = self._stock_steer_ratio
+      if not self._write_fixed_steer_ratio():
+        return
+      self._steer_ratio_enabled = True
 
-OpState = log.SelfdriveState.OpenpilotState
-CALIBRATED = log.ExtrinsicsCalibration.Status.calibrated
-NARROW_ROAD_CAM = VisionStreamType.VISION_STREAM_NARROW_ROAD
-WIDE_CAM = VisionStreamType.VISION_STREAM_WIDE_ROAD
-DEFAULT_DEVICE_CAMERA = DEVICE_CAMERAS["tici", "ar0231"]
+  def _adjust_steer_ratio(self, direction: str) -> None:
+    if not self._steer_ratio_enabled or not self._steer_ratio_adjustment_allowed():
+      return
+    previous = self._fixed_steer_ratio
+    delta = STEER_RATIO_STEP if direction == "+" else -STEER_RATIO_STEP
+    self._fixed_steer_ratio = self._clamp_steer_ratio(round(self._fixed_steer_ratio + delta, 1))
+    if not self._write_fixed_steer_ratio():
+      self._fixed_steer_ratio = previous
 
+  def _write_fixed_steer_ratio(self, value: str | None = None) -> bool:
+    value = f"{self._fixed_steer_ratio:.1f}" if value is None else value
+    temp_path = FIXED_STEER_RATIO_PATH.with_name(f".{FIXED_STEER_RATIO_PATH.name}.tmp")
+    try:
+      temp_path.write_text(value)
+      temp_path.replace(FIXED_STEER_RATIO_PATH)
+      return True
+    except OSError:
+      try:
+        temp_path.unlink(missing_ok=True)
+      except OSError:
+        pass
+      return False
 
-class BookmarkState(IntEnum):
-  HIDDEN = 0
-  DRAGGING = 1
-  TRIGGERED = 2
+  def _draw_steer_ratio_controls(self, rect: rl.Rectangle) -> None:
+    # The Mici onroad view draws steer-ratio controls in its shared full-width
+    # touch bar so camera offset and steer ratio have the same visual layout.
+    return
 
-WIDE_CAM_MAX_SPEED = 5.0  # m/s (10 mph)
-ROAD_CAM_MIN_SPEED = 10  # m/s (25 mph)
+  def is_steer_ratio_control_at(self, point) -> bool:
+    if not self._steer_ratio_controls_visible:
+      return False
+    rect = self.rect
+    bar_height = max(150.0, min(rect.height * 0.25, 220.0))
+    bar_rect = rl.Rectangle(rect.x, rect.y + (rect.height - bar_height) / 2,
+                            rect.width, bar_height)
+    return rl.check_collision_point_rec(point, bar_rect)
 
-CAM_Y_OFFSET = 20
-STOCK_HUD_HOLD_SECONDS = 5.0
-CALIBRATION_RESET_HOLD_SECONDS = 2.0
+  def _draw_model_source(self, rect: rl.Rectangle) -> None:
+    if ui_state.sm.recv_frame['selfdriveState'] < ui_state.started_frame:
+      return
 
-# CAMERA OFFSET DISPLAY - edit these font sizes (pixels).
-CAMERA_OFFSET_VALUE_FONT_SIZE = 72
-CAMERA_OFFSET_SYMBOL_FONT_SIZE = 58
+    loading = ui_state.chestnut_state == ChestnutState.LOADING
+    if loading:
+      icon = self._txt_chestnut
+      opacity = 0.35 + 0.65 * (0.5 - 0.5 * math.cos(rl.get_time() * 6.0))
+    elif ui_state.chestnut_state in (ChestnutState.UNCOMPILED, ChestnutState.FAILED):
+      icon = self._txt_chestnut_orange
+      opacity = 1.0
+    elif ui_state.chestnut_state == ChestnutState.ACTIVE:
+      icon = self._txt_chestnut_green
+      opacity = 1.0
+    else:
+      return
 
-# SPEEDOMETER DISPLAY - centered in the marked area between 8 and 9.
-SPEEDOMETER_VALUE_FONT_SIZE = 112
-SPEEDOMETER_CENTER_X = 0.085  # Match the stock set-speed slot at the upper left.
-SPEEDOMETER_CENTER_Y = 0.17  # Adjusted at render time to align with the brake gauge top.
-# LARGE CENTERED SPEEDOMETER - selected by a 0.6-second long press.
-SPEEDOMETER_LARGE_VALUE_FONT_SIZE = 224
-SPEEDOMETER_LARGE_CENTER_X = 0.50
-SPEEDOMETER_LARGE_CENTER_Y = 0.50
+    if icon is not self._chestnut_icon:
+      self._chestnut_fade_time = rl.get_time()
+      self._chestnut_icon = icon
+    visible = loading or rl.get_time() - self._chestnut_fade_time < SET_SPEED_PERSISTENCE
+    alpha = self._chestnut_alpha_filter.update(visible)
+    if alpha < 1e-2:
+      return
 
+    pos = rl.Vector2(rect.x + rect.width - 10 - icon.width,
+                     rect.y + rect.height - 14 - (self._txt_wheel.height + icon.height) / 2)
+    rl.draw_texture_ex(icon, pos, 0.0, 1.0, rl.Color(255, 255, 255, int(255 * opacity * alpha)))
 
+  def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
+    wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel
 
+    bsm_detected = self._has_blind_spot_detected() if gui_app.sunnypilot_ui() else False
 
-class SpeedometerHudRenderer(HudRenderer):
-  show_current_speed = False
+    if self._show_wheel_critical:
+      self._wheel_alpha_filter.update(255)
+      self._wheel_y_filter.update(0)
+    else:
+      if ui_state.status == UIStatus.DISENGAGED or bsm_detected:
+        self._wheel_alpha_filter.update(0)
+        self._wheel_y_filter.update(wheel_txt.height / 2)
+      else:
+        self._wheel_alpha_filter.update(255 * 0.9)
+        self._wheel_y_filter.update(0)
+
+    # pos
+    pos_x = int(rect.x + 21 + wheel_txt.width / 2)
+    pos_y = int(rect.y + rect.height - 14 - wheel_txt.height / 2 + self._wheel_y_filter.x)
+    rotation = -ui_state.sm['carState'].steeringAngleDeg
+
+    turn_intent_margin = 25
+    self._turn_intent.render(rl.Rectangle(
+      pos_x - wheel_txt.width / 2 - turn_intent_margin,
+      pos_y - wheel_txt.height / 2 - turn_intent_margin,
+      wheel_txt.width + turn_intent_margin * 2,
+      wheel_txt.height + turn_intent_margin * 2,
+    ))
+
+    src_rect = rl.Rectangle(0, 0, wheel_txt.width, wheel_txt.height)
+    dest_rect = rl.Rectangle(pos_x, pos_y, wheel_txt.width, wheel_txt.height)
+    origin = (wheel_txt.width / 2, wheel_txt.height / 2)
+
+    # color and draw
+    color = rl.Color(255, 255, 255, int(self._wheel_alpha_filter.x))
+    if self._show_steering_wheel or self._show_wheel_critical:
+      rl.draw_texture_pro(wheel_txt, src_rect, dest_rect, origin, rotation, color)
+
+    if self._show_wheel_critical:
+      # Draw exclamation point icon
+      EXCLAMATION_POINT_SPACING = 10
+      exclamation_pos_x = pos_x - self._txt_exclamation_point.width / 2 + wheel_txt.width / 2 + EXCLAMATION_POINT_SPACING
+      exclamation_pos_y = pos_y - self._txt_exclamation_point.height / 2
+      rl.draw_texture_ex(self._txt_exclamation_point, rl.Vector2(exclamation_pos_x, exclamation_pos_y), 0.0, 1.0, rl.WHITE)
 
   def _draw_set_speed(self, rect: rl.Rectangle) -> None:
-    if self.show_current_speed:
-      # Current speed occupies this slot; do not draw set speed underneath it.
-      self._set_speed_alpha_filter.update(0)
-      return
-    super()._draw_set_speed(rect)
-
-
-class BookmarkIcon(Widget):
-  PEEK_THRESHOLD = 50  # If icon peeks out this much, snap it fully visible
-  FULL_VISIBLE_OFFSET = 200  # How far onscreen when fully visible
-  HIDDEN_OFFSET = -50  # How far offscreen when hidden
-
-  def __init__(self, bookmark_callback):
-    super().__init__()
-    self._bookmark_callback = bookmark_callback
-    self._icon = gui_app.texture("icons_mici/onroad/bookmark.png", 180, 180)
-    self._offset_filter = BounceFilter(0.0, 0.1, 1 / gui_app.target_fps)
-
-    # State
-    self._interacting = False
-    self._state = BookmarkState.HIDDEN
-    self._swipe_start_x = 0.0
-    self._swipe_current_x = 0.0
-    self._is_swiping = False
-    self._is_swiping_left: bool = False
-    self._triggered_time: float = 0.0
-
-  def is_swiping_left(self) -> bool:
-    """Check if currently swiping left (for scroller to disable)."""
-    return self._is_swiping_left
-
-  def interacting(self):
-    interacting, self._interacting = self._interacting, False
-    return interacting
-
-  def _update_state(self):
-    if self._state == BookmarkState.DRAGGING:
-      # Allow pulling past activated position with rubber band effect
-      swipe_offset = self._swipe_start_x - self._swipe_current_x
-      swipe_offset = min(swipe_offset, self.FULL_VISIBLE_OFFSET + 50)
-      self._offset_filter.update(swipe_offset)
-
-    elif self._state == BookmarkState.TRIGGERED:
-      # Continue animating to fully visible
-      self._offset_filter.update(self.FULL_VISIBLE_OFFSET)
-      # Stay in TRIGGERED state for 1 second
-      if rl.get_time() - self._triggered_time >= 1.5:
-        self._state = BookmarkState.HIDDEN
-
-    elif self._state == BookmarkState.HIDDEN:
-      self._offset_filter.update(self.HIDDEN_OFFSET)
-
-      if self._offset_filter.x < 1e-3:
-        self._interacting = False
-
-  def _handle_mouse_event(self, mouse_event: MouseEvent):
-    if not ui_state.started:
+    """Draw the MAX speed indicator box."""
+    alpha = self._set_speed_alpha_filter.update(0 < rl.get_time() - self._set_speed_changed_time < SET_SPEED_PERSISTENCE and
+                                                self._can_draw_top_icons and self._engaged)
+    if alpha < 1e-2:
       return
 
-    if mouse_event.left_pressed:
-      # Store relative position within widget
-      self._swipe_start_x = mouse_event.pos.x
-      self._swipe_current_x = mouse_event.pos.x
-      self._is_swiping = True
-      self._is_swiping_left = False
-      self._state = BookmarkState.DRAGGING
+    x = rect.x
+    y = rect.y
 
-    elif mouse_event.left_down and self._is_swiping:
-      self._swipe_current_x = mouse_event.pos.x
-      swipe_offset = self._swipe_start_x - self._swipe_current_x
-      self._is_swiping_left = swipe_offset > 0
-      if self._is_swiping_left:
-        self._interacting = True
+    # draw drop shadow
+    circle_radius = 162 // 2
+    rl.draw_circle_gradient(rl.Vector2(x + circle_radius, y + circle_radius), circle_radius,
+                            rl.Color(0, 0, 0, int(255 / 2 * alpha)), rl.BLANK)
 
-    elif mouse_event.left_released:
-      if self._is_swiping:
-        swipe_distance = self._swipe_start_x - self._swipe_current_x
+    set_speed_color = rl.Color(255, 255, 255, int(255 * 0.9 * alpha))
+    max_color = rl.Color(255, 255, 255, int(255 * 0.9 * alpha))
 
-        # If peeking past threshold, transition to animating to fully visible and bookmark
-        if swipe_distance > self.PEEK_THRESHOLD:
-          self._state = BookmarkState.TRIGGERED
-          self._triggered_time = rl.get_time()
-          self._bookmark_callback()
-        else:
-          # Otherwise, transition back to hidden
-          self._state = BookmarkState.HIDDEN
+    set_speed = self.set_speed
+    if self.is_cruise_set and not ui_state.is_metric:
+      set_speed *= KM_TO_MILE
 
-        # Reset swipe state
-        self._is_swiping = False
-        self._is_swiping_left = False
-
-
-  def _render(self, _):
-    """Render the bookmark icon."""
-    if self._offset_filter.x > 0:
-      icon_x = self.rect.x + self.rect.width - round(self._offset_filter.x)
-      icon_y = self.rect.y + (self.rect.height - self._icon.height) / 2  # Vertically centered
-      rl.draw_texture_ex(self._icon, rl.Vector2(icon_x, icon_y), 0.0, 1.0, rl.WHITE)
-
-
-class AugmentedRoadView(CameraView):
-  def __init__(self, bookmark_callback=None, stream_type: VisionStreamType = VisionStreamType.VISION_STREAM_NARROW_ROAD):
-    super().__init__("camerad", stream_type)
-    self._bookmark_callback = bookmark_callback
-    self._set_placeholder_color(rl.BLACK)
-
-    self.device_camera: DeviceCameraConfig | None = None
-    self.view_from_calib = view_frame_from_device_frame.copy()
-    self.view_from_wide_calib = view_frame_from_device_frame.copy()
-
-    self._matrix_cache_key: tuple | None = None
-    self._cached_matrix: np.ndarray | None = None
-    self._content_rect = rl.Rectangle()
-    self._face_press: tuple[float, float, float] | None = None
-    self._hold_toggled = False
-    self._hud_hold_toggled = False
-    self._offset_press_active = False
-    self._calibration_reset_press_started: float | None = None
-    self._calibration_reset_message_until = 0.0
-    self._offset_controls_until = 0.0
-    self._steer_ratio_controls_until = 0.0
-    self._control_swipe_start: tuple[float, float] | None = None
-    self._camera_offset_value = float(ui_state.params.get('CameraOffset', return_default=True))
-    self._speedometer_visible = True
-    self._speedometer_large = False
-    self._stock_hud = False
-    self._dm_hud_toggle = DmHudToggle()
-
-    # Bookmark icon with swipe gesture
-    self._bookmark_icon = BookmarkIcon(bookmark_callback)
-
-    self._model_renderer = ModelRenderer()
-    self._hud_renderer = SpeedometerHudRenderer()
-    self._alert_renderer = AlertRenderer()
-    self._confidence_ball = ConfidenceBall()
-    self._stock_confidence_ball = StockConfidenceBall()
-    self._brake_pressure = BrakePressureBall()
-    self._clock_background = ClockBackground()
-    self._offroad_label = UnifiedLabel("start the car to\nuse sunnypilot", 54, FontWeight.DISPLAY,
-                                       text_color=rl.Color(255, 255, 255, int(255 * 0.9)),
-                                       alignment=TextAlignment.CENTER,
-                                       alignment_vertical=TextAlignmentVertical.MIDDLE)
-
-    self._fade_texture = gui_app.texture("icons_mici/onroad/onroad_fade.png")
-
-  def is_swiping_left(self) -> bool:
-    """Check if currently swiping left (for scroller to disable)."""
-    return self._bookmark_icon.is_swiping_left()
-
-  def _update_state(self):
-    super()._update_state()
-    self._update_dm_hud_toggle()
-
-    if not ui_state.started:
-      self._face_press = None
-      self._hold_toggled = False
-      self._offset_controls_until = 0.0
-
-    # update offroad label
-    if ui_state.panda_type == log.PandaState.PandaType.unknown:
-      self._offroad_label.set_text("system booting")
-    elif ui_state.ignition and not ui_state.started:
-      self._offroad_label.set_text("openpilot can't start\ncheck alerts")
-    else:
-      self._offroad_label.set_text("start the car to\nuse sunnypilot")
-
-  def _update_dm_hud_toggle(self) -> None:
-    sm = ui_state.sm
-    service = "driverMonitoringState"
-    if (not ui_state.started or not sm.all_checks([service]) or
-        sm.recv_frame[service] <= ui_state.started_frame):
-      self._dm_hud_toggle.reset()
-      return
-    if sm.updated[service]:
-      face_detected = sm[service].visionPolicyState.faceDetected
-      if self._dm_hud_toggle.update(face_detected, sm.logMonoTime[service] * 1e-9):
-        self._cycle_hud()
-        # Cancel any touch action that began in the previous HUD mode.
-        self._face_press = None
-
-  def _cycle_hud(self) -> None:
-    # Custom HUD -> centered speedometer -> stock HUD -> custom HUD.
-    if self._stock_hud:
-      self._stock_hud = False
-      self._speedometer_large = False
-    elif self._speedometer_large:
-      self._stock_hud = True
-      self._speedometer_large = False
-      self._confidence_ball.release_face_texture()
-      self._clock_background.release_face_texture()
-    else:
-      self._speedometer_large = True
-    self._offset_controls_until = 0.0
-    self._steer_ratio_controls_until = 0.0
-    self._speedometer_visible = not self._stock_hud
-
-  def _toggle_stock_hud(self) -> None:
-    self._stock_hud = not self._stock_hud
-    self._offset_controls_until = 0.0
-    self._steer_ratio_controls_until = 0.0
-    self._speedometer_visible = not self._stock_hud
-    if self._stock_hud:
-      self._confidence_ball.release_face_texture()
-      self._clock_background.release_face_texture()
-
-  def _inside_face(self, pos: MousePos) -> bool:
-    rect = self.rect
-    return (rect.x <= pos.x < rect.x + rect.width - SIDE_PANEL_WIDTH and
-            rect.y <= pos.y < rect.y + rect.height)
-
-  def _handle_mouse_press(self, mouse_pos: MousePos):
-    if not ui_state.started:
-      super()._handle_mouse_press(mouse_pos)
-      return
-    if self._stock_hud:
-      super()._handle_mouse_press(mouse_pos)
-    self._face_press = None
-    if rl.check_collision_point_rec(rl.Vector2(mouse_pos.x, mouse_pos.y), self._calibration_reset_rect()):
-      self._calibration_reset_press_started = rl.get_time()
-      self._control_swipe_start = None
-      self._offset_press_active = False
-      return
-    if not self._inside_face(mouse_pos):
-      return
-    now = rl.get_time()
-    self._face_press = (now, mouse_pos.x, mouse_pos.y)
-    self._control_swipe_start = (mouse_pos.x, mouse_pos.y)
-    self._hold_toggled = False
-    self._hud_hold_toggled = False
-    self._offset_press_active = now < self._offset_controls_until
-
-  def _toggle_speedometer_for_hold(self, now: float) -> None:
-    if self._face_press is None or self._hud_hold_toggled:
-      return
-    elapsed = now - self._face_press[0]
-    # Check the five-second action even after the shorter hold has fired.
-    if elapsed > STOCK_HUD_HOLD_SECONDS:
-      self._toggle_stock_hud()
-      self._hud_hold_toggled = True
-      self._hold_toggled = True
-      return
-    if not self._stock_hud and not self._hold_toggled and elapsed >= 0.6:
-      self._speedometer_large = not self._speedometer_large
-      self._speedometer_visible = True
-      self._hold_toggled = True
-      self._offset_controls_until = 0.0
-
-  def _handle_mouse_event(self, event: MouseEvent):
-    super()._handle_mouse_event(event)
-    if self._calibration_reset_press_started is not None:
-      if event.left_pressed:
-        return
-      now = rl.get_time()
-      button = self._calibration_reset_rect()
-      still_inside = rl.check_collision_point_rec(rl.Vector2(event.pos.x, event.pos.y), button)
-      if not event.left_down or not still_inside or not self._is_parked_for_calibration_reset():
-        self._calibration_reset_press_started = None
-      elif now - self._calibration_reset_press_started >= CALIBRATION_RESET_HOLD_SECONDS:
-        self._reset_calibration()
-        self._calibration_reset_press_started = None
-        self._calibration_reset_message_until = now + 3.5
-      return
-    press = self._face_press
-    if press is None:
-      return
-    if (not ui_state.started or not self._inside_face(event.pos) or
-        (event.pos.x - press[1]) ** 2 + (event.pos.y - press[2]) ** 2 > 30 ** 2):
-      self._face_press = None
-      return
-    if event.left_down and not event.left_pressed:
-      self._toggle_speedometer_for_hold(rl.get_time())
-
-  def _handle_mouse_release(self, mouse_pos: MousePos):
-    if self._calibration_reset_press_started is not None:
-      self._calibration_reset_press_started = None
-      return
-    if not ui_state.started:
-      self._face_press = None
-      self._control_swipe_start = None
-      super()._handle_mouse_release(mouse_pos)
-      return
-    swipe_start = self._control_swipe_start
-    self._control_swipe_start = None
-    if swipe_start is not None:
-      dx, dy = mouse_pos.x - swipe_start[0], mouse_pos.y - swipe_start[1]
-      if self._inside_face(MousePos(swipe_start[0], swipe_start[1])) and self._inside_face(mouse_pos) and dy >= 65 and abs(dx) <= 90:
-        self._face_press = None
-        self._offset_controls_until = 0.0
-        self._steer_ratio_controls_until = rl.get_time() + 5.0
-        self._speedometer_visible = False
-        return
-
-    press = self._face_press
-    if press is None:
-      return
-    if (self._bookmark_icon.interacting() or not self._inside_face(mouse_pos) or
-        (mouse_pos.x - press[1]) ** 2 + (mouse_pos.y - press[2]) ** 2 > 30 ** 2):
-      self._face_press = None
-      return
-    now = rl.get_time()
-    self._toggle_speedometer_for_hold(now)
-    self._face_press = None
-    if self._hold_toggled:
-      return
-    if self._stock_hud:
-      super()._handle_mouse_release(mouse_pos)
-      return
-
-    # In steer-ratio mode, the same left/value/right bar adjusts or toggles the ratio.
-    if now < self._steer_ratio_controls_until and self._hud_renderer.is_steer_ratio_control_at(mouse_pos):
-      third = self._content_rect.x + self._content_rect.width / 3
-      two_thirds = self._content_rect.x + self._content_rect.width * 2 / 3
-      if mouse_pos.x < third:
-        self._hud_renderer.adjust_steer_ratio("-")
-      elif mouse_pos.x > two_thirds:
-        self._hud_renderer.adjust_steer_ratio("+")
-      else:
-        self._hud_renderer.toggle_steer_ratio()
-      self._steer_ratio_controls_until = now + 5.0
-      return
-
-    # While the camera-offset bar is open, a single tap adjusts left or right.
-    if self._offset_press_active and ui_state.active_bundle is not None:
-      midpoint = self.rect.x + (self.rect.width - SIDE_PANEL_WIDTH) / 2
-      step = -0.01 if mouse_pos.x < midpoint else 0.01
-      value = float(ui_state.params.get('CameraOffset', return_default=True))
-      value = round(max(-0.35, min(0.35, value + step)), 2)
-      ui_state.params.put('CameraOffset', value)
-      self._camera_offset_value = value
-      self._model_renderer._camera_offset = value
-      self._model_renderer._transform_dirty = True
-      self._offset_controls_until = now + 5.0
-      return
-
-    # A single tap anywhere opens the full-width camera-offset bar.
-    self._steer_ratio_controls_until = 0.0
-    self._camera_offset_value = float(ui_state.params.get('CameraOffset', return_default=True))
-    self._offset_controls_until = now + 5.0
-    self._speedometer_visible = False
-
-  def _calibration_reset_rect(self) -> rl.Rectangle:
-    rect = self._content_rect
-    width = min(220.0, rect.width * 0.22)
-    height = 60.0
-    return rl.Rectangle(rect.x + 16, rect.y + rect.height - height - 16, width, height)
-
-  def _is_parked_for_calibration_reset(self) -> bool:
-    sm = ui_state.sm
-    return (not ui_state.engaged and sm.valid['carState'] and sm.alive['carState'] and
-            sm.recv_frame['carState'] > ui_state.started_frame and
-            sm['carState'].gearShifter == car.CarState.GearShifter.park and
-            abs(sm['carState'].vEgo) < 0.1)
-
-  def _reset_calibration(self) -> None:
-    # Recheck at the point of action in case the vehicle moved during the hold.
-    if not self._is_parked_for_calibration_reset():
-      return
-    params = ui_state.params
-    for key in ("CalibrationParams", "LiveTorqueParameters", "LiveParametersV2", "LiveDelay"):
-      params.remove(key)
-    params.put_bool("OnroadCycleRequested", True, block=True)
-
-  def _draw_calibration_reset(self) -> None:
-    now = rl.get_time()
-    rect = self._calibration_reset_rect()
-    parked = self._is_parked_for_calibration_reset()
-    pressed = self._calibration_reset_press_started is not None and parked
-    progress = min(1.0, (now - self._calibration_reset_press_started) / CALIBRATION_RESET_HOLD_SECONDS) if pressed else 0.0
-    background = rl.Color(12, 14, 18, 220)
-    border = rl.Color(80, 220, 130, 230) if parked else rl.Color(120, 120, 125, 180)
-    rl.draw_rectangle_rounded(rect, 0.18, 8, background)
-    rl.draw_rectangle_rounded_lines_ex(rect, 0.18, 8, 2, border)
-    hud = self._content_rect
-    line_height = 4.0
-    line_y = hud.y + hud.height - line_height
-    rl.draw_rectangle_rec(rl.Rectangle(hud.x, line_y, hud.width, line_height),
-                          rl.Color(100, 110, 120, 150))
-    if progress > 0:
-      fill = rl.Rectangle(hud.x, line_y, hud.width * progress, line_height)
-      rl.draw_rectangle_rec(fill, rl.Color(0, 225, 110, 255))
-    font = gui_app.font(FontWeight.SEMI_BOLD)
-    label = "HOLD TO RESET" if parked else "PARK TO RESET"
-    color = rl.WHITE if parked else rl.Color(155, 155, 160, 255)
-    size = max(9, min(14, rect.width * 0.025))
-    line1 = rl.measure_text_ex(font, label, size, 0)
-    line2 = rl.measure_text_ex(font, "CALIBRATION", size, 0)
-    rl.draw_text_ex(font, label,
-                    rl.Vector2(rect.x + (rect.width - line1.x) / 2, rect.y + 15), size, 0, color)
-    rl.draw_text_ex(font, "CALIBRATION",
-                    rl.Vector2(rect.x + (rect.width - line2.x) / 2, rect.y + 32), size, 0, color)
-    if now < self._calibration_reset_message_until:
-      message = "CALIBRATION RESET"
-      msg_size = 24
-      measured = rl.measure_text_ex(font, message, msg_size, 0)
-      rl.draw_text_ex(font, message,
-                      rl.Vector2(rect.x + (rect.width - measured.x) / 2,
-                                 rect.y - measured.y - 10),
-                      msg_size, 0, rl.Color(80, 255, 145, 255))
-  def _draw_touch_controls(self):
-    now = rl.get_time()
-    if now >= self._offset_controls_until:
-      if self._offset_controls_until > 0:
-        self._offset_controls_until = 0.0
-    if now >= self._steer_ratio_controls_until and self._steer_ratio_controls_until > 0:
-      self._steer_ratio_controls_until = 0.0
-    if self._offset_controls_until == 0.0 and self._steer_ratio_controls_until == 0.0:
-      self._speedometer_visible = True
-
-    rect = self._content_rect
-    font = gui_app.font(FontWeight.DISPLAY_REGULAR)
-    active = ui_state.active_bundle is not None
-    color = rl.WHITE if active else rl.Color(160, 160, 160, 255)
-    steer_ratio_visible = now < self._steer_ratio_controls_until
-    if self._offset_controls_until == 0.0 and not steer_ratio_visible:
-      return
-    # Font sizes are configured near the top of this file.
-    height = max(150.0, min(rect.height * 0.25, 220.0),
-                 CAMERA_OFFSET_VALUE_FONT_SIZE + 32, CAMERA_OFFSET_SYMBOL_FONT_SIZE + 32)
-    top = rect.y + (rect.height - height) / 2
-    rl.draw_rectangle_rec(rl.Rectangle(rect.x, top, rect.width, height), rl.BLACK)
-    if steer_ratio_visible:
-      value_text = f'{self._hud_renderer.steer_ratio_value():.1f}'
-    else:
-      value = 0.0 if abs(self._camera_offset_value) < 0.005 else self._camera_offset_value
-      value_text = f'{value:.2f}'
-    value_size = rl.measure_text_ex(font, value_text, CAMERA_OFFSET_VALUE_FONT_SIZE, 0)
-    value_y = top + (height - value_size.y) / 2 - (12 if steer_ratio_visible else 0)
-    value_pos = rl.Vector2(rect.x + rect.width * 0.50 - value_size.x / 2, value_y)
-    rl.draw_text_ex(font, value_text, value_pos, CAMERA_OFFSET_VALUE_FONT_SIZE, 0, color)
-
-    if steer_ratio_visible:
-      state_text = "FIXED ON" if self._hud_renderer.steer_ratio_enabled() else "FIXED OFF"
-      state_size = max(20, CAMERA_OFFSET_SYMBOL_FONT_SIZE // 2)
-      state_measured = rl.measure_text_ex(font, state_text, state_size, 0)
-      rl.draw_text_ex(font, state_text,
-                      rl.Vector2(rect.x + rect.width * 0.5 - state_measured.x / 2,
-                                 top + height - state_measured.y - 8),
-                      state_size, 0, color)
-
-    symbol_color = rl.Color(0, 220, 80, 255)
-    if steer_ratio_visible and not self._hud_renderer.steer_ratio_adjustment_allowed():
-      symbol_color = rl.Color(110, 120, 115, 255)
-    symbol_size = min(CAMERA_OFFSET_SYMBOL_FONT_SIZE, height * 0.42)
-    for symbol, x in (("−", rect.x + rect.width * 0.28),
-                       ("+", rect.x + rect.width * 0.72)):
-      measured = rl.measure_text_ex(font, symbol, symbol_size, 0)
-      rl.draw_text_ex(font, symbol,
-                      rl.Vector2(x - measured.x / 2, top + (height - measured.y) / 2),
-                      symbol_size, 0, symbol_color)
-
-  def _draw_speedometer(self):
-    if not self._speedometer_visible:
-      return
-    sm = ui_state.sm
-    if (not sm.valid['carState'] or not sm.alive['carState'] or
-        sm.recv_frame['carState'] <= ui_state.started_frame):
-      return
-    rect = self._content_rect
-    value_size = SPEEDOMETER_LARGE_VALUE_FONT_SIZE if self._speedometer_large else SPEEDOMETER_VALUE_FONT_SIZE
-    x_fraction = SPEEDOMETER_LARGE_CENTER_X if self._speedometer_large else SPEEDOMETER_CENTER_X
-    y_fraction = SPEEDOMETER_LARGE_CENTER_Y if self._speedometer_large else SPEEDOMETER_CENTER_Y
-    center_x = rect.x + rect.width * x_fraction
-    if self._speedometer_large:
-      center_y = rect.y + rect.height * y_fraction
-    else:
-      brake_radius = min(rect.width * 0.23, rect.height * 0.43)
-      center_y = rect.y + rect.height * 0.52 - brake_radius * 0.98 + value_size / 2
-    label = str(round(self._hud_renderer.speed))
-    font = gui_app.font(FontWeight.DISPLAY)
-    measured = rl.measure_text_ex(font, label, value_size, 0)
-    pos = rl.Vector2(center_x - measured.x / 2, center_y - value_size / 2)
-    rl.draw_text_ex(font, label, rl.Vector2(pos.x + 2, pos.y + 2), value_size, 0, rl.BLACK)
-    rl.draw_text_ex(font, label, pos, value_size, 0, rl.WHITE)
-
-  def _draw_full_hud_clock(self):
-    rect = self._content_rect
-    cx, cy = rect.x + rect.width / 2, rect.y + rect.height / 2
-    now = datetime.now().astimezone()
-    seconds = now.second + now.microsecond / 1_000_000
-    minutes = now.minute + seconds / 60.0
-    hours = now.hour % 12 + minutes / 60.0
-    hands = ((-90 + hours * 30, 0.22, 0.018, rl.WHITE),
-             (-90 + minutes * 6, 0.43, 0.010, rl.WHITE),
-             (-90 + seconds * 6, 0.43, 0.003, rl.Color(255, 45, 58, 255)))
-    for angle, length, thickness, color in hands:
-      end = rl.Vector2(cx + math.cos(math.radians(angle)) * rect.width * length,
-                       cy + math.sin(math.radians(angle)) * rect.height * length)
-      rl.draw_line_ex(rl.Vector2(cx + 2, cy + 2), rl.Vector2(end.x + 2, end.y + 2),
-                      max(1, rect.height * thickness + 2), rl.BLACK)
-      rl.draw_line_ex(rl.Vector2(cx, cy), end, max(1, rect.height * thickness), color)
-
-  def _draw_brake_pressure_arch(self):
-    rect = self._content_rect
-    center_x = rect.x + rect.width * 0.50
-    center_y = rect.y + rect.height * 0.52
-    radius = min(rect.width * 0.23, rect.height * 0.43)
-    percent = self._brake_pressure.brake_percent()
-    center = rl.Vector2(center_x, center_y)
-    inner_radius, outer_radius = radius * 0.82, radius * 0.98
-    rl.draw_ring(center, inner_radius, outer_radius, 0, 360, 96, rl.Color(75, 78, 84, 220))
-    if percent > 0:
-      end_angle = -90 + 360 * percent / 100
-      brake_color = rl.Color(255, 35, 75, 255)
-      rl.draw_ring(center, inner_radius, outer_radius, -90, end_angle,
-                   max(2, round(96 * percent / 100)), brake_color)
-      cap_radius = (outer_radius - inner_radius) / 2
-      cap_distance = (outer_radius + inner_radius) / 2
-      cap_angle = math.radians(end_angle)
-      rl.draw_circle_v(rl.Vector2(center_x + math.cos(cap_angle) * cap_distance,
-                                  center_y + math.sin(cap_angle) * cap_distance),
-                       cap_radius, brake_color)
-  def _render(self, _):
-    # Offroad retains the normal startup/status screen.
-    if not ui_state.started:
-      rl.draw_rectangle_rec(self.rect, rl.BLACK)
-      self._offroad_label.render(self._rect)
-      return
-
-    self._switch_stream_if_needed(ui_state.sm)
-
-    # Update calibration before rendering
-    self._update_calibration()
-
-    # Create inner content area with border padding
-    self._content_rect = rl.Rectangle(
-      self.rect.x,
-      self.rect.y,
-      self.rect.width - SIDE_PANEL_WIDTH,
-      self.rect.height,
+    set_speed_text = CRUISE_DISABLED_CHAR if not self.is_cruise_set else str(round(set_speed))
+    rl.draw_text_ex(
+      self._font_display,
+      set_speed_text,
+      rl.Vector2(x + 13 + 4, y + 3 - 8 - 3 + 4),
+      FONT_SIZES.set_speed,
+      0,
+      set_speed_color,
     )
 
-    # Update and draw the side indicator independently of face visibility.
-    if not self._stock_hud:
-      self._confidence_ball.render(self.rect)
-
-    # Enable scissor mode to clip all rendering within content rectangle boundaries
-    # This creates a rendering viewport that prevents graphics from drawing outside the border
-    rl.begin_scissor_mode(
-      int(self._content_rect.x),
-      int(self._content_rect.y),
-      int(self._content_rect.width),
-      int(self._content_rect.height)
+    max_text = tr("MAX")
+    rl.draw_text_ex(
+      self._font_semi_bold,
+      max_text,
+      rl.Vector2(x + 25, y + FONT_SIZES.set_speed - 7 + 4),
+      FONT_SIZES.max_speed,
+      0,
+      max_color,
     )
 
-    # Render the base camera view
-    super()._render(self._content_rect)
+  def _draw_current_speed(self, rect: rl.Rectangle) -> None:
+    """Draw the current vehicle speed and unit."""
+    speed_text = str(round(self.speed))
+    speed_text_size = measure_text_cached(self._font_bold, speed_text, FONT_SIZES.current_speed)
+    speed_pos = rl.Vector2(rect.x + rect.width / 2 - speed_text_size.x / 2, 180 - speed_text_size.y / 2)
+    rl.draw_text_ex(self._font_bold, speed_text, speed_pos, FONT_SIZES.current_speed, 0, COLORS.WHITE)
 
-    # Draw all UI overlays
-    self._model_renderer.render(self._content_rect)
-
-    # Fade out bottom of overlays for looks
-    rl.draw_texture_ex(self._fade_texture, rl.Vector2(self._content_rect.x, self._content_rect.y), 0.0, 1.0, rl.WHITE)
-
-    # Draw the full-HUD clock face and pressure arc beneath the HUD text.
-    if not self._stock_hud:
-      self._clock_background.draw_hud_face(self._content_rect, draw_small_clock=False)
-      self._draw_full_hud_clock()
-      self._draw_brake_pressure_arch()
-      self._draw_touch_controls()
-      self._draw_calibration_reset()
-
-    alert_to_render, _ = self._alert_renderer.will_render()
-
-    self._hud_renderer.show_current_speed = not self._stock_hud and self._speedometer_visible
-    self._hud_renderer.set_can_draw_top_icons((self._stock_hud or self._speedometer_visible) and alert_to_render is None)
-    self._hud_renderer.set_wheel_critical_icon(False)
-    self._hud_renderer.set_steer_ratio_controls_visible(rl.get_time() < self._steer_ratio_controls_until)
-    self._hud_renderer.render(self._content_rect)
-    if not self._stock_hud:
-      self._draw_speedometer()
-    self._alert_renderer.render(self._content_rect)
-
-    # Draw fake rounded border
-    rl.draw_rectangle_rounded_lines_ex(self._content_rect, 0.2 * 1.02, 10, 50, rl.BLACK)
-
-    # End clipping region
-    rl.end_scissor_mode()
-
-    # Custom UI extension point - add custom overlays here
-    # Use self._content_rect for positioning within camera bounds
-
-    if self._stock_hud:
-      self._stock_confidence_ball.render(self.rect)
-    self._bookmark_icon.render(self.rect)
-
-  def _switch_stream_if_needed(self, sm):
-    if sm['selfdriveState'].experimentalMode and WIDE_CAM in self.available_streams:
-      v_ego = sm['carState'].vEgo
-      if v_ego < WIDE_CAM_MAX_SPEED:
-        target = WIDE_CAM
-      elif v_ego > ROAD_CAM_MIN_SPEED:
-        target = NARROW_ROAD_CAM
-      else:
-        # Hysteresis zone - keep current stream
-        target = self.stream_type
-    else:
-      target = NARROW_ROAD_CAM
-
-    if self.stream_type != target:
-      self.switch_stream(target)
-
-  def _update_calibration(self):
-    # Update device camera if not already set
-    sm = ui_state.sm
-    if not self.device_camera and sm.seen['narrowRoadCameraState'] and sm.seen['deviceState']:
-      self.device_camera = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['narrowRoadCameraState'].sensor))]
-
-    # Check if camera calibration data is available and valid
-    if not (sm.updated["extrinsicsCalibration"] and sm.valid['extrinsicsCalibration']):
-      return
-
-    calib = sm['extrinsicsCalibration']
-    if len(calib.rpyCalib) != 3 or calib.calStatus != CALIBRATED:
-      return
-
-    # Update view_from_calib matrix
-    device_from_calib = rot_from_euler(calib.rpyCalib)
-    self.view_from_calib = view_frame_from_device_frame @ device_from_calib
-
-    # Update wide calibration if available
-    if hasattr(calib, 'wideFromDeviceEuler') and len(calib.wideFromDeviceEuler) == 3:
-      wide_from_device = rot_from_euler(calib.wideFromDeviceEuler)
-      self.view_from_wide_calib = view_frame_from_device_frame @ wide_from_device @ device_from_calib
-
-  def _calc_frame_matrix(self, rect: rl.Rectangle) -> np.ndarray:
-    cache_key = (
-      ui_state.sm.recv_frame['extrinsicsCalibration'],
-      int(self._content_rect.width),
-      int(self._content_rect.height),
-      self.stream_type,
-      round(ui_state.sm['carState'].vEgo, 1),
-    )
-
-    if cache_key == self._matrix_cache_key and self._cached_matrix is not None:
-      return self._cached_matrix
-
-    # Get camera configuration
-    device_camera = self.device_camera or DEFAULT_DEVICE_CAMERA
-    is_wide_camera = self.stream_type == WIDE_CAM
-    intrinsic = device_camera.wide_road.intrinsics if is_wide_camera else device_camera.narrow_road.intrinsics
-    calibration = self.view_from_wide_calib if is_wide_camera else self.view_from_calib
-    if is_wide_camera:
-      zoom = 0.7 * 1.5
-    else:
-      zoom = np.interp(ui_state.sm['carState'].vEgo, [10, 30], [0.8, 1.0])
-
-    # Calculate transforms for vanishing point
-    inf_point = np.array([1000.0, 0.0, 0.0])
-    calib_transform = intrinsic @ calibration
-    kep = calib_transform @ inf_point
-
-    # Calculate center points and dimensions
-    w, h = self._content_rect.width, self._content_rect.height
-    cx, cy = intrinsic[0, 2], intrinsic[1, 2]
-
-    # Ensure zoom views the whole area
-    zoom = max(zoom, w / (2 * cx), h / (2 * cy))
-
-    # Calculate max allowed offsets with margins
-    margin = 5
-    max_x_offset = max(0.0, cx * zoom - w / 2 - margin)
-    max_y_offset = max(0.0, cy * zoom - h / 2 - margin)
-
-    # Calculate and clamp offsets to prevent out-of-bounds issues
-    try:
-      if abs(kep[2]) > 1e-6:
-        x_offset = np.clip((kep[0] / kep[2] - cx) * zoom, -max_x_offset, max_x_offset)
-        y_offset = np.clip((kep[1] / kep[2] - cy) * zoom + CAM_Y_OFFSET, -max_y_offset, max_y_offset)
-      else:
-        x_offset, y_offset = 0, 0
-    except (ZeroDivisionError, OverflowError):
-      x_offset, y_offset = 0, 0
-
-    # Cache the computed transformation matrix to avoid recalculations
-    self._matrix_cache_key = cache_key
-    self._cached_matrix = np.array([
-      [zoom * 2 * cx / w, 0, -x_offset / w * 2],
-      [0, zoom * 2 * cy / h, -y_offset / h * 2],
-      [0, 0, 1.0]
-    ])
-
-    # built without rect.x/y so cache stays hot during scroll. ModelRenderer adds offset at draw time
-    video_transform = np.array([
-      [zoom, 0.0, (w / 2 - x_offset) - (cx * zoom)],
-      [0.0, zoom, (h / 2 - y_offset) - (cy * zoom)],
-      [0.0, 0.0, 1.0]
-    ])
-    self._model_renderer.set_transform(video_transform @ calib_transform)
-
-    return self._cached_matrix
-
-  def close(self):
-    self._confidence_ball.release_face_texture()
-    self._clock_background.release_face_texture()
-    super().close()
-
-  def show_event(self):
-    if gui_app.sunnypilot_ui():
-      ui_state.reset_onroad_sleep_timer(OnroadTimerStatus.RESUME)
-
-  def hide_event(self):
-    self._confidence_ball.release_face_texture()
-    self._clock_background.release_face_texture()
-    self._face_press = None
-    if gui_app.sunnypilot_ui():
-      ui_state.reset_onroad_sleep_timer(OnroadTimerStatus.PAUSE)
-
-
-if __name__ == "__main__":
-  gui_app.init_window("OnRoad Camera View")
-  road_camera_view = AugmentedRoadView(lambda: None, stream_type=NARROW_ROAD_CAM)
-  print("***press space to switch camera view***")
-  try:
-    for _ in gui_app.render():
-      ui_state.update()
-      if rl.is_key_released(rl.KeyboardKey.KEY_SPACE):
-        if WIDE_CAM in road_camera_view.available_streams:
-          stream = NARROW_ROAD_CAM if road_camera_view.stream_type == WIDE_CAM else WIDE_CAM
-          road_camera_view.switch_stream(stream)
-      road_camera_view.render(rl.Rectangle(0, 0, gui_app.width, gui_app.height))
-  finally:
-    road_camera_view.close()
+    unit_text = tr("km/h") if ui_state.is_metric else tr("mph")
+    unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
+    unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
+    rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
