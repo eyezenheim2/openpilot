@@ -575,7 +575,7 @@ class AugmentedRoadView(CameraView):
     if steer_ratio_visible and not self._hud_renderer.steer_ratio_adjustment_allowed():
       symbol_color = rl.Color(110, 120, 115, 255)
     symbol_size = min(CAMERA_OFFSET_SYMBOL_FONT_SIZE, height * 0.42)
-    for symbol, x in (("−", rect.x + rect.width * 0.28),
+    for symbol, x in (("-", rect.x + rect.width * 0.28),
                        ("+", rect.x + rect.width * 0.72)):
       measured = rl.measure_text_ex(font, symbol, symbol_size, 0)
       rl.draw_text_ex(font, symbol,
