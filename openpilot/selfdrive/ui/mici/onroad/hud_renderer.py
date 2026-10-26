@@ -190,8 +190,8 @@ class HudRenderer(Widget):
       for label in ("-", "+")
     }
 
-  def set_brake_pressure_percent(self, percent: int | None) -> None:
-    self._torque_bar.set_brake_pressure_percent(percent)
+  def set_brake_pressure_percent(self, percent: int | None, enabled: bool = True) -> None:
+    self._torque_bar.set_brake_pressure_percent(percent, enabled)
 
   def set_show_steering_wheel(self, show: bool) -> None:
     self._show_steering_wheel = show
