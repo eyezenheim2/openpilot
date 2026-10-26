@@ -699,7 +699,7 @@ class AugmentedRoadView(CameraView):
 
     # Draw the full-HUD clock face and pressure arc beneath the HUD text.
     if not self._stock_hud:
-      self._clock_background.draw_hud_face(self._content_rect, draw_small_clock=False)
+      self._clock_background.draw_hud_face(self._content_rect)
       self._draw_full_hud_clock()
       self._draw_brake_pressure_arch()
       self._draw_brake_pressure_percentage()
