@@ -9,7 +9,7 @@ from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.lib.dm_hud_toggle import DmHudToggle
 from openpilot.selfdrive.ui.mici.onroad import SIDE_PANEL_WIDTH
 from openpilot.selfdrive.ui.mici.onroad.alert_renderer import AlertRenderer
-from openpilot.selfdrive.ui.sunnypilot.onroad.clock_background import ClockBackground, DATE_NUMBER_SIZE
+from openpilot.selfdrive.ui.sunnypilot.onroad.clock_background import ClockBackground
 from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.mici.onroad.model_renderer import ModelRenderer
 from openpilot.selfdrive.ui.mici.onroad.confidence_ball import ConfidenceBall
@@ -220,6 +220,7 @@ class BookmarkIcon(Widget):
         # Reset swipe state
         self._is_swiping = False
         self._is_swiping_left = False
+
 
 
 
@@ -475,7 +476,7 @@ class AugmentedRoadView(CameraView):
     rect = self._content_rect
     width = min(220.0, rect.width * 0.22)
     height = 60.0
-    return rl.Rectangle(rect.x + 16, rect.y + rect.height - height - 16, width, height)
+    return rl.Rectangle(rect.x + rect.width * 0.25, rect.y + rect.height - height - 16, width, height)
 
   def _is_parked_for_calibration_reset(self) -> bool:
     sm = ui_state.sm
@@ -605,56 +606,19 @@ class AugmentedRoadView(CameraView):
     rl.draw_text_ex(font, label, rl.Vector2(pos.x + 2, pos.y + 2), value_size, 0, rl.BLACK)
     rl.draw_text_ex(font, label, pos, value_size, 0, rl.WHITE)
 
-  def _draw_full_hud_clock(self):
-    rect = self._content_rect
-    cx, cy = rect.x + rect.width / 2, rect.y + rect.height / 2
-    now = datetime.now().astimezone()
-    seconds = now.second + now.microsecond / 1_000_000
-    minutes = now.minute + seconds / 60.0
-    hours = now.hour % 12 + minutes / 60.0
-    hands = ((-90 + hours * 30, 0.22, 0.018, rl.WHITE),
-             (-90 + minutes * 6, 0.43, 0.010, rl.WHITE),
-             (-90 + seconds * 6, 0.43, 0.003, rl.Color(255, 45, 58, 255)))
-    for angle, length, thickness, color in hands:
-      end = rl.Vector2(cx + math.cos(math.radians(angle)) * rect.width * length,
-                       cy + math.sin(math.radians(angle)) * rect.height * length)
-      rl.draw_line_ex(rl.Vector2(cx + 2, cy + 2), rl.Vector2(end.x + 2, end.y + 2),
-                      max(1, rect.height * thickness + 2), rl.BLACK)
-      rl.draw_line_ex(rl.Vector2(cx, cy), end, max(1, rect.height * thickness), color)
-
-  def _draw_brake_pressure_arch(self):
-    rect = self._content_rect
-    center_x = rect.x + rect.width * 0.50
-    center_y = rect.y + rect.height * 0.52
-    radius = min(rect.width * 0.23, rect.height * 0.43)
-    percent = self._brake_pressure.brake_percent()
-    center = rl.Vector2(center_x, center_y)
-    inner_radius, outer_radius = radius * 0.82, radius * 0.98
-    rl.draw_ring(center, inner_radius, outer_radius, 0, 360, 96, rl.Color(75, 78, 84, 220))
-    if percent > 0:
-      end_angle = -90 + 360 * percent / 100
-      brake_color = rl.Color(255, 35, 75, 255)
-      rl.draw_ring(center, inner_radius, outer_radius, -90, end_angle,
-                   max(2, round(96 * percent / 100)), brake_color)
-      cap_radius = (outer_radius - inner_radius) / 2
-      cap_distance = (outer_radius + inner_radius) / 2
-      cap_angle = math.radians(end_angle)
-      rl.draw_circle_v(rl.Vector2(center_x + math.cos(cap_angle) * cap_distance,
-                                  center_y + math.sin(cap_angle) * cap_distance),
-                       cap_radius, brake_color)
-  def _draw_brake_pressure_percentage(self):
+  def _draw_center_brake_pressure_percentage(self):
     rect = self._content_rect
     percent = self._brake_pressure.brake_percent()
     text = f"{percent}%"
-    font_size = rect.height * DATE_NUMBER_SIZE
+    font_size = rect.height * 0.22
     font = gui_app.font(FontWeight.DISPLAY)
     measured = rl.measure_text_ex(font, text, font_size, 0)
-    radius = min(rect.width * 0.23, rect.height * 0.43)
-    x = rect.x + rect.width * 0.86 - measured.x / 2
-    y = rect.y + rect.height * 0.52 - radius * 0.98
+    pos = rl.Vector2(rect.x + (rect.width - measured.x) / 2,
+                     rect.y + (rect.height - measured.y) / 2)
     color = rl.WHITE if percent > 0 else rl.Color(145, 149, 157, 255)
-    rl.draw_text_ex(font, text, rl.Vector2(x + 2, y + 2), font_size, 0, rl.BLACK)
-    rl.draw_text_ex(font, text, rl.Vector2(x, y), font_size, 0, color)
+    rl.draw_text_ex(font, text, rl.Vector2(pos.x + 3, pos.y + 3), font_size, 0, rl.BLACK)
+    rl.draw_text_ex(font, text, pos, font_size, 0, color)
+
   def _render(self, _):
     # Offroad retains the normal startup/status screen.
     if not ui_state.started:
@@ -697,12 +661,9 @@ class AugmentedRoadView(CameraView):
     # Fade out bottom of overlays for looks
     rl.draw_texture_ex(self._fade_texture, rl.Vector2(self._content_rect.x, self._content_rect.y), 0.0, 1.0, rl.WHITE)
 
-    # Draw the full-HUD clock face and pressure arc beneath the HUD text.
+    # Draw the full HUD clock background; the pressure graph is drawn by TorqueBar.
     if not self._stock_hud:
       self._clock_background.draw_hud_face(self._content_rect)
-      self._draw_full_hud_clock()
-      self._draw_brake_pressure_arch()
-      self._draw_brake_pressure_percentage()
       self._draw_touch_controls()
       self._draw_calibration_reset()
 
@@ -712,7 +673,10 @@ class AugmentedRoadView(CameraView):
     self._hud_renderer.set_can_draw_top_icons((self._stock_hud or self._speedometer_visible) and alert_to_render is None)
     self._hud_renderer.set_wheel_critical_icon(False)
     self._hud_renderer.set_steer_ratio_controls_visible(rl.get_time() < self._steer_ratio_controls_until)
+    self._hud_renderer.set_brake_pressure_percent(None if self._stock_hud else self._brake_pressure.brake_percent())
     self._hud_renderer.render(self._content_rect)
+    if not self._stock_hud:
+      self._draw_center_brake_pressure_percentage()
     if not self._stock_hud:
       self._draw_speedometer()
     self._alert_renderer.render(self._content_rect)
