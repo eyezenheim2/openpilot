@@ -1,276 +1,417 @@
-#!/usr/bin/env python3
 import math
-from numbers import Number
-
-from openpilot.cereal import log
-from opendbc.car.structs import car
-import openpilot.cereal.messaging as messaging
+import pyray as rl
+from dataclasses import dataclass
 from openpilot.common.constants import CV
-from openpilot.common.params import Params
-from openpilot.common.realtime import config_realtime_process, DT_CTRL, Priority, Ratekeeper
-from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
+from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus, ChestnutState
+from openpilot.system.ui.lib.application import gui_app, FontWeight
+from openpilot.system.ui.lib.multilang import tr
+from openpilot.system.ui.lib.text_measure import measure_text_cached
+from openpilot.system.ui.widgets import Widget
+from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.cereal import log
 
-from opendbc.car.car_helpers import interfaces
-from opendbc.car.vehicle_model import VehicleModel
-from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
-from openpilot.selfdrive.controls.lib.latcontrol import LatControl
-from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
-from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
-from openpilot.selfdrive.controls.lib.latcontrol_curvature import LatControlCurvature
-from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
-from openpilot.selfdrive.controls.lib.longcontrol import LongControl
-from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
-from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
+EventName = log.OnroadEvent.EventName
 
-from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
+# Constants
+SET_SPEED_NA = 255
+KM_TO_MILE = 0.621371
+CRUISE_DISABLED_CHAR = '–'
 
-State = log.SelfdriveState.OpenpilotState
-LaneChangeState = log.LaneChangeState
-LaneChangeDirection = log.LaneChangeDirection
-
-ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
+SET_SPEED_PERSISTENCE = 2.5  # seconds
+FIXED_STEER_RATIO_PARAM = "FixedSteerRatio"
+STEER_RATIO_STEP = 0.1
+STEER_RATIO_ABSOLUTE_MAX = 23.33
+STEER_RATIO_MIN_FACTOR = 0.75
+STEER_RATIO_MAX_FACTOR = 1.25
+STEER_RATIO_MAX_ADJUST_SPEED = 0.1
+SPEEDOMETER_LONG_TOUCH_SECONDS = 0.65
+SPEEDOMETER_TOUCH_SLOP = 40
 
 
-class Controls(ControlsExt):
-  def __init__(self) -> None:
-    self.params = Params()
-    cloudlog.info("controlsd is waiting for CarParams")
-    self.CP = messaging.log_from_bytes(self.params.get("CarParams", block=True), car.CarParams)
-    cloudlog.info("controlsd got CarParams")
+@dataclass(frozen=True)
+class FontSizes:
+  current_speed: int = 176
+  speed_unit: int = 66
+  max_speed: int = 36
+  set_speed: int = 112
 
-    # Initialize sunnypilot controlsd extension and base model state
-    ControlsExt.__init__(self, self.CP, self.params)
 
-    self.CI = interfaces[self.CP.carFingerprint](self.CP, self.CP_SP)
+@dataclass(frozen=True)
+class Colors:
+  WHITE = rl.WHITE
+  WHITE_TRANSLUCENT = rl.Color(255, 255, 255, 200)
 
-    self.sm = messaging.SubMaster(['lateralDelay', 'vehicleParameters', 'lateralTorqueParameters', 'modelV2', 'selfdriveState',
-                                   'extrinsicsCalibration', 'deviceMotion', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
-                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance'] + self.sm_services_ext,
-                                  poll='selfdriveState')
-    self.pm = messaging.PubMaster(['carControl', 'controlsState'] + self.pm_services_ext)
 
-    self.steer_limited_by_safety = False
-    self.curvature = 0.0
-    self.desired_curvature = 0.0
+FONT_SIZES = FontSizes()
+COLORS = Colors()
 
-    self.pose_calibrator = PoseCalibrator()
-    self.calibrated_pose: Pose | None = None
 
-    self.LoC = LongControl(self.CP, self.CP_SP)
-    self.VM = VehicleModel(self.CP)
-    self.LaC: LatControl
-    if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
-      self.LaC = LatControlAngle(self.CP, self.CP_SP, self.CI, DT_CTRL)
-    elif self.CP.steerControlType == car.CarParams.SteerControlType.curvature:
-      self.LaC = LatControlCurvature(self.CP, self.CP_SP, self.CI, DT_CTRL)
-    elif self.CP.lateralTuning.which() == 'pid':
-      self.LaC = LatControlPID(self.CP, self.CP_SP, self.CI, DT_CTRL)
-    elif self.CP.lateralTuning.which() == 'torque':
-      self.LaC = LatControlTorque(self.CP, self.CP_SP, self.CI, DT_CTRL)
+class TurnIntent(Widget):
+  FADE_IN_ANGLE = 30  # degrees
 
-    self.LaC = ControlsExt.initialize_lateral_control(self, self.LaC, self.CI, DT_CTRL)
+  def __init__(self):
+    super().__init__()
+    self._pre = False
+    self._turn_intent_direction: int = 0
 
-  def update(self):
-    self.sm.update(15)
-    if self.sm.updated["extrinsicsCalibration"]:
-      self.pose_calibrator.feed_extrinsics_calibration(self.sm['extrinsicsCalibration'])
-    if self.sm.updated["deviceMotion"]:
-      device_motion = Pose.from_device_motion(self.sm['deviceMotion'])
-      self.calibrated_pose = self.pose_calibrator.build_calibrated_pose(device_motion)
+    self._turn_intent_alpha_filter = FirstOrderFilter(0, 0.05, 1 / gui_app.target_fps)
+    self._turn_intent_rotation_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
 
-  def state_control(self):
-    CS = self.sm['carState']
+    self._txt_turn_intent_left: rl.Texture = gui_app.texture('icons_mici/turn_intent_left.png', 50, 20)
+    self._txt_turn_intent_right: rl.Texture = gui_app.texture('icons_mici/turn_intent_left.png', 50, 20, flip_x=True)
 
-    # Update VehicleModel
-    lp = self.sm['vehicleParameters']
-    x = max(lp.stiffnessFactor, 0.1)
-    sr = max(lp.steerRatio, 0.1)
-    self.VM.update_params(x, sr)
+  def _render(self, _):
+    if self._turn_intent_alpha_filter.x > 1e-2:
+      turn_intent_texture = self._txt_turn_intent_right if self._turn_intent_direction == 1 else self._txt_turn_intent_left
+      src_rect = rl.Rectangle(0, 0, turn_intent_texture.width, turn_intent_texture.height)
+      dest_rect = rl.Rectangle(self._rect.x + self._rect.width / 2, self._rect.y + self._rect.height / 2,
+                               turn_intent_texture.width, turn_intent_texture.height)
 
-    steer_angle_without_offset = math.radians(CS.steeringAngleDeg - lp.angleOffsetDeg)
-    self.curvature = -self.VM.calc_curvature(steer_angle_without_offset, CS.vEgo, lp.roll)
+      origin = (turn_intent_texture.width / 2, self._rect.height / 2)
+      color = rl.Color(255, 255, 255, int(255 * self._turn_intent_alpha_filter.x))
+      rl.draw_texture_pro(turn_intent_texture, src_rect, dest_rect, origin, self._turn_intent_rotation_filter.x, color)
 
-    # Update Torque Params
-    if self.CP.lateralTuning.which() == 'torque':
-      torque_params = self.sm['lateralTorqueParameters']
-      if self.sm.all_checks(['lateralTorqueParameters']) and torque_params.useParams:
-        self.LaC.update_torque_parameters(torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,
-                                           torque_params.frictionCoefficientFiltered)
+  def _update_state(self) -> None:
+    sm = ui_state.sm
 
-        self.LaC.extension.update_limits()
+    left = any(e.name == EventName.preLaneChangeLeft for e in sm['onroadEvents'])
+    right = any(e.name == EventName.preLaneChangeRight for e in sm['onroadEvents'])
+    if left or right:
+      # pre lane change
+      if not self._pre:
+        self._turn_intent_rotation_filter.x = self.FADE_IN_ANGLE if left else -self.FADE_IN_ANGLE
 
-      self.LaC.extension.update_model_v2(self.sm['modelV2'])
+      self._pre = True
+      self._turn_intent_direction = -1 if left else 1
+      self._turn_intent_alpha_filter.update(1)
+      self._turn_intent_rotation_filter.update(0)
+    elif any(e.name == EventName.laneChange for e in sm['onroadEvents']):
+      # fade out and rotate away
+      self._pre = False
+      self._turn_intent_alpha_filter.update(0)
 
-      self.LaC.extension.update_lateral_lag(self.lat_delay)
-
-    long_plan = self.sm['longitudinalPlan']
-    model_v2 = self.sm['modelV2']
-
-    CC = car.CarControl.new_message()
-    CC.enabled = self.sm['selfdriveState'].enabled
-
-    # Check which actuators can be enabled
-    standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
-
-    # Get which state to use for active lateral control
-    _lat_active = self.get_lat_active(self.sm)
-
-    CC.latActive = _lat_active and not CS.steerFaultTemporary and not CS.steerFaultPermanent and \
-                   (not standstill or self.CP.steerAtStandstill)
-    CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and \
-                    (self.CP.openpilotLongitudinalControl or not self.CP_SP.pcmCruiseSpeed)
-
-    actuators = CC.actuators
-    actuators.longControlState = self.LoC.long_control_state
-
-    # Enable blinkers while lane changing
-    if model_v2.meta.laneChangeState != LaneChangeState.off:
-      CC.leftBlinker = model_v2.meta.laneChangeDirection == LaneChangeDirection.left
-      CC.rightBlinker = model_v2.meta.laneChangeDirection == LaneChangeDirection.right
-
-    if not CC.latActive:
-      self.LaC.reset()
-      self.lane_centering.reset()
-    if not CC.longActive:
-      self.LoC.reset()
-
-    # accel PID loop
-    pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, self.CP_SP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
-    actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits))
-
-    # Steering PID loop and lateral MPC
-    # Reset desired curvature to current to avoid violating the limits on engage
-    if self.sm.valid['lateralManeuverPlan']:
-      new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
-    else:
-      new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
-
-    new_desired_curvature = self.lane_centering.update(
-      new_desired_curvature, model_v2, CS.vEgo,
-      self.lane_centering_enabled,
-      self.lane_center_offset,
-      self.lane_centering_e2e_authority,
-      CC.latActive,
-      bool(self.sm.all_checks(['modelV2'])),
-      self.lane_centering_pause_on_signal,
-      bool(CS.leftBlinker or CS.rightBlinker))
-
-    self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
-    lat_delay = self.sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS
-
-    actuators.curvature = self.desired_curvature
-    steer, lateral_output, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
-                                                     self.steer_limited_by_safety, self.desired_curvature,
-                                                     self.calibrated_pose, curvature_limited, lat_delay)
-    actuators.torque = float(steer)
-    if self.CP.steerControlType == car.CarParams.SteerControlType.curvature:
-      actuators.curvature = float(lateral_output)
-    else:
-      actuators.steeringAngleDeg = float(lateral_output)
-    # Ensure no NaNs/Infs
-    for p in ACTUATOR_FIELDS:
-      attr = getattr(actuators, p)
-      if not isinstance(attr, Number):
-        continue
-
-      if not math.isfinite(attr):
-        cloudlog.error(f"actuators.{p} not finite {actuators.to_dict()}")
-        setattr(actuators, p, 0.0)
-
-    return CC, lac_log
-
-  def publish(self, CC, lac_log):
-    CS = self.sm['carState']
-
-    # Orientation and angle rates can be useful for carcontroller
-    # Only calibrated (car) frame is relevant for the carcontroller
-    CC.currentCurvature = self.curvature
-    if self.calibrated_pose is not None:
-      CC.orientationNED = self.calibrated_pose.orientation.xyz.tolist()
-      CC.angularVelocity = self.calibrated_pose.angular_velocity.xyz.tolist()
-
-    CC.cruiseControl.override = CC.enabled and not CC.longActive and (self.CP.openpilotLongitudinalControl or not self.CP_SP.pcmCruiseSpeed)
-    CC.cruiseControl.cancel = CS.cruiseState.enabled and (not CC.enabled or not self.CP.pcmCruise)
-    CC.cruiseControl.resume = CC.enabled and CS.cruiseState.standstill and not self.sm['longitudinalPlan'].shouldStop
-
-    hudControl = CC.hudControl
-    hudControl.setSpeed = float(CS.vCruiseCluster * CV.KPH_TO_MS)
-    hudControl.speedVisible = CC.enabled
-    hudControl.lanesVisible = CC.enabled
-    hudControl.leadVisible = self.sm['longitudinalPlan'].hasLead
-    hudControl.leadDistanceBars = self.sm['selfdriveState'].personality.raw + 1
-    hudControl.visualAlert = self.sm['selfdriveState'].alertHudVisual
-
-    hudControl.rightLaneVisible = True
-    hudControl.leftLaneVisible = True
-    if self.sm.valid['driverAssistance']:
-      hudControl.leftLaneDepart = self.sm['driverAssistance'].leftLaneDeparture
-      hudControl.rightLaneDepart = self.sm['driverAssistance'].rightLaneDeparture
-
-    if self.get_lat_active(self.sm):
-      CO = self.sm['carOutput']
-      if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
-        self.steer_limited_by_safety = abs(CC.actuators.steeringAngleDeg - CO.actuatorsOutput.steeringAngleDeg) > \
-                                              STEER_ANGLE_SATURATION_THRESHOLD
+      if self._turn_intent_direction == 0:
+        # unknown. missed pre frame?
+        self._turn_intent_rotation_filter.update(0)
       else:
-        self.steer_limited_by_safety = abs(CC.actuators.torque - CO.actuatorsOutput.torque) > 1e-2
-
-    # TODO: both controlsState and carControl valids should be set by
-    #       sm.all_checks(), but this creates a circular dependency
-
-    # controlsState
-    dat = messaging.new_message('controlsState')
-    dat.valid = CS.canValid
-    cs = dat.controlsState
-
-    cs.curvature = self.curvature
-    cs.longitudinalPlanMonoTime = self.sm.logMonoTime['longitudinalPlan']
-    cs.lateralPlanMonoTime = self.sm.logMonoTime['modelV2']
-    cs.desiredCurvature = self.desired_curvature
-    cs.longControlState = self.LoC.long_control_state
-    cs.upAccelCmd = float(self.LoC.pid.p)
-    cs.uiAccelCmd = float(self.LoC.pid.i)
-    cs.ufAccelCmd = float(self.LoC.pid.f)
-    cs.forceDecel = bool(self.sm['driverMonitoringState'].noResponseForceDecel or
-                         (self.sm['selfdriveState'].state == State.softDisabling))
-
-    # trigger the car's stock driver monitoring escalation
-    CC.driverMonitoringEscalation = cs.forceDecel
-
-    lat_tuning = self.CP.lateralTuning.which()
-    if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
-      cs.lateralControlState.angleState = lac_log
-    elif self.CP.steerControlType == car.CarParams.SteerControlType.curvature:
-      cs.lateralControlState.curvatureState = lac_log
-    elif lat_tuning == 'pid':
-      cs.lateralControlState.pidState = lac_log
-    elif lat_tuning == 'torque':
-      cs.lateralControlState.torqueState = lac_log
-
-    self.pm.send('controlsState', dat)
-
-    # carControl
-    cc_send = messaging.new_message('carControl')
-    cc_send.valid = CS.canValid
-    cc_send.carControl = CC
-    self.pm.send('carControl', cc_send)
-
-  def run(self):
-    rk = Ratekeeper(100, print_delay_threshold=None)
-    while True:
-      self.update()
-      CC, lac_log = self.state_control()
-      self.publish(CC, lac_log)
-      self.get_params_sp(self.sm)
-      self.run_ext(self.sm, self.pm)
-      rk.monitor_time()
+        self._turn_intent_rotation_filter.update(self._turn_intent_direction * self.FADE_IN_ANGLE)
+    else:
+      # didn't complete lane change, just hide
+      self._pre = False
+      self._turn_intent_direction = 0
+      self._turn_intent_alpha_filter.update(0)
+      self._turn_intent_rotation_filter.update(0)
 
 
-def main():
-  config_realtime_process(4, Priority.CTRL_HIGH)
-  controls = Controls()
-  controls.run()
+class HudRenderer(Widget):
+  def __init__(self):
+    super().__init__()
+    """Initialize the HUD renderer."""
+    self.is_cruise_set: bool = False
+    self.is_cruise_available: bool = True
+    self.set_speed: float = SET_SPEED_NA
+    self._set_speed_changed_time: float = 0
+    self.speed: float = 0.0
+    self.v_ego_cluster_seen: bool = False
+    self._engaged: bool = False
+    self._chestnut_fade_time: float = 0
 
+    self._can_draw_top_icons = True
+    self._show_wheel_critical = False
+    self._speedometer_centered = False
+    self._speedometer_touch_start: tuple[float, float, float] | None = None
+    self._speedometer_touch_toggled = False
 
-if __name__ == "__main__":
-  main()
+    self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
+    self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
+    self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
+    self._font_display: rl.Font = gui_app.font(FontWeight.DISPLAY)
+
+    self._turn_intent = TurnIntent()
+    self._torque_bar = TorqueBar()
+
+    self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/wheel.png', 50, 50)
+    self._txt_wheel_critical: rl.Texture = gui_app.texture('icons_mici/wheel_critical.png', 50, 50)
+    self._txt_exclamation_point: rl.Texture = gui_app.texture('icons_mici/exclamation_point.png', 9, 44)
+    self._txt_chestnut: rl.Texture = gui_app.texture('icons_mici/chestnut.png', 60, 44)
+    self._txt_chestnut_green: rl.Texture = gui_app.texture('icons_mici/chestnut_green.png', 60, 44)
+    self._txt_chestnut_orange: rl.Texture = gui_app.texture('icons_mici/chestnut_orange.png', 75, 44)
+    self._chestnut_icon: rl.Texture | None = None
+    self._wheel_alpha_filter = FirstOrderFilter(0, 0.05, 1 / gui_app.target_fps)
+    self._wheel_y_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
+
+    self._set_speed_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
+    self._chestnut_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
+
+    try:
+      stock_ratio = float(ui_state.sm["carParams"].steerRatio)
+    except (AttributeError, TypeError, ValueError):
+      stock_ratio = 15.0
+    self._stock_steer_ratio = stock_ratio if stock_ratio > 0 else 15.0
+    self._fixed_steer_ratio = self._stock_steer_ratio
+    self._steer_ratio_enabled = False
+    self._read_fixed_steer_ratio()
+
+  def steer_ratio_value(self) -> float:
+    return self._fixed_steer_ratio
+
+  def steer_ratio_enabled(self) -> bool:
+    return self._steer_ratio_enabled
+
+  def steer_ratio_adjustment_allowed(self) -> bool:
+    sm = ui_state.sm
+    return (sm.valid["carState"] and sm.valid["carControl"] and
+            abs(sm["carState"].vEgo) <= STEER_RATIO_MAX_ADJUST_SPEED and
+            not sm["carControl"].enabled)
+
+  def _read_fixed_steer_ratio(self) -> None:
+    value = ui_state.params.get(FIXED_STEER_RATIO_PARAM)
+    if not value:
+      return
+    try:
+      self._fixed_steer_ratio = self._clamp_steer_ratio(float(value))
+      self._steer_ratio_enabled = True
+    except (TypeError, ValueError):
+      pass
+
+  def _clamp_steer_ratio(self, ratio: float) -> float:
+    low = min(self._stock_steer_ratio * STEER_RATIO_MIN_FACTOR, STEER_RATIO_ABSOLUTE_MAX)
+    high = max(low, min(self._stock_steer_ratio * STEER_RATIO_MAX_FACTOR,
+                        STEER_RATIO_ABSOLUTE_MAX))
+    return max(low, min(ratio, high))
+
+  def toggle_steer_ratio(self) -> None:
+    if not self.steer_ratio_adjustment_allowed():
+      return
+    if self._steer_ratio_enabled:
+      ui_state.params.put(FIXED_STEER_RATIO_PARAM, "")
+      self._steer_ratio_enabled = False
+      self._fixed_steer_ratio = self._stock_steer_ratio
+    else:
+      self._fixed_steer_ratio = self._stock_steer_ratio
+      ui_state.params.put(FIXED_STEER_RATIO_PARAM, f"{self._fixed_steer_ratio:.1f}")
+      self._steer_ratio_enabled = True
+
+  def adjust_steer_ratio(self, direction: str) -> None:
+    if not self._steer_ratio_enabled or not self.steer_ratio_adjustment_allowed():
+      return
+    delta = STEER_RATIO_STEP if direction == "+" else -STEER_RATIO_STEP
+    self._fixed_steer_ratio = self._clamp_steer_ratio(
+      round(self._fixed_steer_ratio + delta, 1))
+    ui_state.params.put(FIXED_STEER_RATIO_PARAM, f"{self._fixed_steer_ratio:.1f}")
+
+  def set_wheel_critical_icon(self, critical: bool):
+    """Set the wheel icon to critical or normal state."""
+    self._show_wheel_critical = critical
+
+  def set_can_draw_top_icons(self, can_draw_top_icons: bool):
+    """Set whether to draw the top part of the HUD."""
+    self._can_draw_top_icons = can_draw_top_icons
+
+  def drawing_top_icons(self) -> bool:
+    # whether we're drawing any top icons currently
+    return bool(self._set_speed_alpha_filter.x > 1e-2)
+
+  def _update_state(self) -> None:
+    """Update HUD state based on car state and controls state."""
+    sm = ui_state.sm
+    if sm.recv_frame["carState"] < ui_state.started_frame:
+      self.is_cruise_set = False
+      self.set_speed = SET_SPEED_NA
+      self.speed = 0.0
+      return
+
+    controls_state = sm['controlsState']
+    car_state = sm['carState']
+
+    v_cruise_cluster = car_state.vCruiseCluster
+    set_speed = (
+      controls_state.deprecated.vCruise if v_cruise_cluster == 0.0 else v_cruise_cluster
+    )
+    engaged = sm['selfdriveState'].enabled
+    if (set_speed != self.set_speed and engaged) or (engaged and not self._engaged):
+      self._set_speed_changed_time = rl.get_time()
+    if engaged != self._engaged:
+      self._chestnut_fade_time = rl.get_time() if engaged else 0
+    self._engaged = engaged
+    self.set_speed = set_speed
+    self.is_cruise_set = 0 < self.set_speed < SET_SPEED_NA
+    self.is_cruise_available = self.set_speed != -1
+
+    v_ego_cluster = car_state.vEgoCluster
+    self.v_ego_cluster_seen = self.v_ego_cluster_seen or v_ego_cluster != 0.0
+    v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
+    speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
+    self.speed = max(0.0, v_ego * speed_conversion)
+
+  def _render(self, rect: rl.Rectangle) -> None:
+    """Render HUD elements to the screen."""
+
+    self._torque_bar.render(rect)
+
+    self._draw_model_source(rect)
+
+    self._draw_steering_wheel(rect)
+    # Draw speed last so the enlarged readout stays legible over the rest of the HUD.
+    self._draw_current_speed(rect)
+
+  def _handle_mouse_press(self, mouse_pos) -> None:
+    self._speedometer_touch_start = (rl.get_time(), mouse_pos.x, mouse_pos.y)
+    self._speedometer_touch_toggled = False
+
+  def _handle_mouse_event(self, event) -> None:
+    if self._speedometer_touch_start is None or not event.left_down or event.left_pressed:
+      return
+    start_time, start_x, start_y = self._speedometer_touch_start
+    moved = (event.pos.x - start_x) ** 2 + (event.pos.y - start_y) ** 2
+    if moved > SPEEDOMETER_TOUCH_SLOP ** 2:
+      self._speedometer_touch_start = None
+      return
+    if (not self._speedometer_touch_toggled and
+        rl.get_time() - start_time >= SPEEDOMETER_LONG_TOUCH_SECONDS):
+      self._speedometer_centered = not self._speedometer_centered
+      self._speedometer_touch_toggled = True
+
+  def _handle_mouse_release(self, mouse_pos) -> None:
+    self._speedometer_touch_start = None
+    self._speedometer_touch_toggled = False
+
+  def _draw_model_source(self, rect: rl.Rectangle) -> None:
+    loading = ui_state.chestnut_state == ChestnutState.LOADING
+    if loading:
+      icon = self._txt_chestnut
+      opacity = 0.35 + 0.65 * (0.5 - 0.5 * math.cos(rl.get_time() * 6.0))
+    elif ui_state.chestnut_state in (ChestnutState.UNCOMPILED, ChestnutState.FAILED):
+      icon = self._txt_chestnut_orange
+      opacity = 1.0
+    elif ui_state.chestnut_state == ChestnutState.ACTIVE:
+      icon = self._txt_chestnut_green
+      opacity = 1.0
+    else:
+      return
+
+    if icon is not self._chestnut_icon:
+      self._chestnut_fade_time = rl.get_time()
+      self._chestnut_icon = icon
+    visible = loading or rl.get_time() - self._chestnut_fade_time < SET_SPEED_PERSISTENCE
+    alpha = self._chestnut_alpha_filter.update(visible)
+    if alpha < 1e-2:
+      return
+
+    pos = rl.Vector2(rect.x + rect.width - 10 - icon.width,
+                     rect.y + rect.height - 14 - (self._txt_wheel.height + icon.height) / 2)
+    rl.draw_texture_ex(icon, pos, 0.0, 1.0, rl.Color(255, 255, 255, int(255 * opacity * alpha)))
+
+  def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
+    wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel
+
+    bsm_detected = self._has_blind_spot_detected() if gui_app.sunnypilot_ui() else False
+
+    if self._show_wheel_critical:
+      self._wheel_alpha_filter.update(255)
+      self._wheel_y_filter.update(0)
+    else:
+      if ui_state.status == UIStatus.DISENGAGED or bsm_detected:
+        self._wheel_alpha_filter.update(0)
+        self._wheel_y_filter.update(wheel_txt.height / 2)
+      else:
+        self._wheel_alpha_filter.update(255 * 0.9)
+        self._wheel_y_filter.update(0)
+
+    # pos
+    pos_x = int(rect.x + 21 + wheel_txt.width / 2)
+    pos_y = int(rect.y + rect.height - 14 - wheel_txt.height / 2 + self._wheel_y_filter.x)
+    rotation = -ui_state.sm['carState'].steeringAngleDeg
+
+    turn_intent_margin = 25
+    self._turn_intent.render(rl.Rectangle(
+      pos_x - wheel_txt.width / 2 - turn_intent_margin,
+      pos_y - wheel_txt.height / 2 - turn_intent_margin,
+      wheel_txt.width + turn_intent_margin * 2,
+      wheel_txt.height + turn_intent_margin * 2,
+    ))
+
+    src_rect = rl.Rectangle(0, 0, wheel_txt.width, wheel_txt.height)
+    dest_rect = rl.Rectangle(pos_x, pos_y, wheel_txt.width, wheel_txt.height)
+    origin = (wheel_txt.width / 2, wheel_txt.height / 2)
+
+    # color and draw
+    color = rl.Color(255, 255, 255, int(self._wheel_alpha_filter.x))
+    rl.draw_texture_pro(wheel_txt, src_rect, dest_rect, origin, rotation, color)
+
+    if self._show_wheel_critical:
+      # Draw exclamation point icon
+      EXCLAMATION_POINT_SPACING = 10
+      exclamation_pos_x = pos_x - self._txt_exclamation_point.width / 2 + wheel_txt.width / 2 + EXCLAMATION_POINT_SPACING
+      exclamation_pos_y = pos_y - self._txt_exclamation_point.height / 2
+      rl.draw_texture_ex(self._txt_exclamation_point, rl.Vector2(exclamation_pos_x, exclamation_pos_y), 0.0, 1.0, rl.WHITE)
+
+  def _draw_set_speed(self, rect: rl.Rectangle) -> None:
+    """Draw the MAX speed indicator box."""
+    alpha = self._set_speed_alpha_filter.update(0 < rl.get_time() - self._set_speed_changed_time < SET_SPEED_PERSISTENCE and
+                                                self._can_draw_top_icons and self._engaged)
+    if alpha < 1e-2:
+      return
+
+    x = rect.x
+    y = rect.y
+
+    # draw drop shadow
+    circle_radius = 162 // 2
+    rl.draw_circle_gradient(rl.Vector2(x + circle_radius, y + circle_radius), circle_radius,
+                            rl.Color(0, 0, 0, int(255 / 2 * alpha)), rl.BLANK)
+
+    set_speed_color = rl.Color(255, 255, 255, int(255 * 0.9 * alpha))
+    max_color = rl.Color(255, 255, 255, int(255 * 0.9 * alpha))
+
+    set_speed = self.set_speed
+    if self.is_cruise_set and not ui_state.is_metric:
+      set_speed *= KM_TO_MILE
+
+    set_speed_text = CRUISE_DISABLED_CHAR if not self.is_cruise_set else str(round(set_speed))
+    rl.draw_text_ex(
+      self._font_display,
+      set_speed_text,
+      rl.Vector2(x + 13 + 4, y + 3 - 8 - 3 + 4),
+      FONT_SIZES.set_speed,
+      0,
+      set_speed_color,
+    )
+
+    max_text = tr("MAX")
+    rl.draw_text_ex(
+      self._font_semi_bold,
+      max_text,
+      rl.Vector2(x + 25, y + FONT_SIZES.set_speed - 7 + 4),
+      FONT_SIZES.max_speed,
+      0,
+      max_color,
+    )
+
+  def _draw_current_speed(self, rect: rl.Rectangle) -> None:
+    """Draw speed in its original position or centered to fill the HUD."""
+    speed_text = str(round(self.speed))
+    if self._speedometer_centered:
+      # Size from the actual text, so two-digit speeds stay inside the HUD.
+      reference_size = 1000.0
+      measured = rl.measure_text_ex(self._font_display, speed_text, reference_size, 0)
+      if measured.x <= 0 or measured.y <= 0:
+        return
+      font_size = reference_size * min(rect.width * 0.90 / measured.x,
+                                       rect.height * 0.88 / measured.y)
+      text_size = rl.measure_text_ex(self._font_display, speed_text, font_size, 0)
+      text_pos = rl.Vector2(rect.x + (rect.width - text_size.x) / 2,
+                            rect.y + (rect.height - text_size.y) / 2)
+      rl.draw_text_ex(self._font_display, speed_text,
+                      rl.Vector2(text_pos.x + 4, text_pos.y + 4), font_size, 0, rl.BLACK)
+      rl.draw_text_ex(self._font_display, speed_text, text_pos, font_size, 0, rl.WHITE)
+      return
+    rl.draw_text_ex(
+      self._font_display,
+      speed_text,
+      rl.Vector2(rect.x + 17, rect.y - 4),
+      FONT_SIZES.set_speed,
+      0,
+      rl.WHITE,
+    )
