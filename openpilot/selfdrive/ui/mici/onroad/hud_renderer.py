@@ -19,6 +19,14 @@ KM_TO_MILE = 0.621371
 CRUISE_DISABLED_CHAR = '–'
 
 SET_SPEED_PERSISTENCE = 2.5  # seconds
+FIXED_STEER_RATIO_PARAM = "FixedSteerRatio"
+STEER_RATIO_STEP = 0.1
+STEER_RATIO_ABSOLUTE_MAX = 23.33
+STEER_RATIO_MIN_FACTOR = 0.75
+STEER_RATIO_MAX_FACTOR = 1.25
+STEER_RATIO_MAX_ADJUST_SPEED = 0.1
+SPEEDOMETER_LONG_TOUCH_SECONDS = 0.65
+SPEEDOMETER_TOUCH_SLOP = 40
 
 
 @dataclass(frozen=True)
@@ -111,6 +119,9 @@ class HudRenderer(Widget):
 
     self._can_draw_top_icons = True
     self._show_wheel_critical = False
+    self._speedometer_centered = False
+    self._speedometer_touch_start: tuple[float, float, float] | None = None
+    self._speedometer_touch_toggled = False
 
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
     self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
@@ -132,6 +143,63 @@ class HudRenderer(Widget):
 
     self._set_speed_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
     self._chestnut_alpha_filter = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
+
+    try:
+      stock_ratio = float(ui_state.sm["carParams"].steerRatio)
+    except (AttributeError, TypeError, ValueError):
+      stock_ratio = 15.0
+    self._stock_steer_ratio = stock_ratio if stock_ratio > 0 else 15.0
+    self._fixed_steer_ratio = self._stock_steer_ratio
+    self._steer_ratio_enabled = False
+    self._read_fixed_steer_ratio()
+
+  def steer_ratio_value(self) -> float:
+    return self._fixed_steer_ratio
+
+  def steer_ratio_enabled(self) -> bool:
+    return self._steer_ratio_enabled
+
+  def steer_ratio_adjustment_allowed(self) -> bool:
+    sm = ui_state.sm
+    return (sm.valid["carState"] and sm.valid["carControl"] and
+            abs(sm["carState"].vEgo) <= STEER_RATIO_MAX_ADJUST_SPEED and
+            not sm["carControl"].enabled)
+
+  def _read_fixed_steer_ratio(self) -> None:
+    value = ui_state.params.get(FIXED_STEER_RATIO_PARAM)
+    if not value:
+      return
+    try:
+      self._fixed_steer_ratio = self._clamp_steer_ratio(float(value))
+      self._steer_ratio_enabled = True
+    except (TypeError, ValueError):
+      pass
+
+  def _clamp_steer_ratio(self, ratio: float) -> float:
+    low = min(self._stock_steer_ratio * STEER_RATIO_MIN_FACTOR, STEER_RATIO_ABSOLUTE_MAX)
+    high = max(low, min(self._stock_steer_ratio * STEER_RATIO_MAX_FACTOR,
+                        STEER_RATIO_ABSOLUTE_MAX))
+    return max(low, min(ratio, high))
+
+  def toggle_steer_ratio(self) -> None:
+    if not self.steer_ratio_adjustment_allowed():
+      return
+    if self._steer_ratio_enabled:
+      ui_state.params.put(FIXED_STEER_RATIO_PARAM, "")
+      self._steer_ratio_enabled = False
+      self._fixed_steer_ratio = self._stock_steer_ratio
+    else:
+      self._fixed_steer_ratio = self._stock_steer_ratio
+      ui_state.params.put(FIXED_STEER_RATIO_PARAM, f"{self._fixed_steer_ratio:.1f}")
+      self._steer_ratio_enabled = True
+
+  def adjust_steer_ratio(self, direction: str) -> None:
+    if not self._steer_ratio_enabled or not self.steer_ratio_adjustment_allowed():
+      return
+    delta = STEER_RATIO_STEP if direction == "+" else -STEER_RATIO_STEP
+    self._fixed_steer_ratio = self._clamp_steer_ratio(
+      round(self._fixed_steer_ratio + delta, 1))
+    ui_state.params.put(FIXED_STEER_RATIO_PARAM, f"{self._fixed_steer_ratio:.1f}")
 
   def set_wheel_critical_icon(self, critical: bool):
     """Set the wheel icon to critical or normal state."""
@@ -182,12 +250,32 @@ class HudRenderer(Widget):
 
     self._torque_bar.render(rect)
 
-    if self.is_cruise_set:
-      self._draw_set_speed(rect)
-
     self._draw_model_source(rect)
 
     self._draw_steering_wheel(rect)
+    # Draw speed last so the enlarged readout stays legible over the rest of the HUD.
+    self._draw_current_speed(rect)
+
+  def _handle_mouse_press(self, mouse_pos) -> None:
+    self._speedometer_touch_start = (rl.get_time(), mouse_pos.x, mouse_pos.y)
+    self._speedometer_touch_toggled = False
+
+  def _handle_mouse_event(self, event) -> None:
+    if self._speedometer_touch_start is None or not event.left_down or event.left_pressed:
+      return
+    start_time, start_x, start_y = self._speedometer_touch_start
+    moved = (event.pos.x - start_x) ** 2 + (event.pos.y - start_y) ** 2
+    if moved > SPEEDOMETER_TOUCH_SLOP ** 2:
+      self._speedometer_touch_start = None
+      return
+    if (not self._speedometer_touch_toggled and
+        rl.get_time() - start_time >= SPEEDOMETER_LONG_TOUCH_SECONDS):
+      self._speedometer_centered = not self._speedometer_centered
+      self._speedometer_touch_toggled = True
+
+  def _handle_mouse_release(self, mouse_pos) -> None:
+    self._speedometer_touch_start = None
+    self._speedometer_touch_toggled = False
 
   def _draw_model_source(self, rect: rl.Rectangle) -> None:
     loading = ui_state.chestnut_state == ChestnutState.LOADING
@@ -302,13 +390,28 @@ class HudRenderer(Widget):
     )
 
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
-    """Draw the current vehicle speed and unit."""
+    """Draw speed in its original position or centered to fill the HUD."""
     speed_text = str(round(self.speed))
-    speed_text_size = measure_text_cached(self._font_bold, speed_text, FONT_SIZES.current_speed)
-    speed_pos = rl.Vector2(rect.x + rect.width / 2 - speed_text_size.x / 2, 180 - speed_text_size.y / 2)
-    rl.draw_text_ex(self._font_bold, speed_text, speed_pos, FONT_SIZES.current_speed, 0, COLORS.WHITE)
-
-    unit_text = tr("km/h") if ui_state.is_metric else tr("mph")
-    unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
-    unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
-    rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
+    if self._speedometer_centered:
+      # Size from the actual text, so two-digit speeds stay inside the HUD.
+      reference_size = 1000.0
+      measured = rl.measure_text_ex(self._font_display, speed_text, reference_size, 0)
+      if measured.x <= 0 or measured.y <= 0:
+        return
+      font_size = reference_size * min(rect.width * 0.90 / measured.x,
+                                       rect.height * 0.88 / measured.y)
+      text_size = rl.measure_text_ex(self._font_display, speed_text, font_size, 0)
+      text_pos = rl.Vector2(rect.x + (rect.width - text_size.x) / 2,
+                            rect.y + (rect.height - text_size.y) / 2)
+      rl.draw_text_ex(self._font_display, speed_text,
+                      rl.Vector2(text_pos.x + 4, text_pos.y + 4), font_size, 0, rl.BLACK)
+      rl.draw_text_ex(self._font_display, speed_text, text_pos, font_size, 0, rl.WHITE)
+      return
+    rl.draw_text_ex(
+      self._font_display,
+      speed_text,
+      rl.Vector2(rect.x + 17, rect.y - 4),
+      FONT_SIZES.set_speed,
+      0,
+      rl.WHITE,
+    )
