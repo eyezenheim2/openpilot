@@ -159,7 +159,6 @@ class BookmarkIcon(Widget):
     if self._offset_filter.x > 0:
       icon_x = self.rect.x + self.rect.width - round(self._offset_filter.x)
       icon_y = self.rect.y + (self.rect.height - self._icon.height) / 2  # Vertically centered
-      rl.draw_rectangle_rec(rl.Rectangle(icon_x, icon_y, self._icon.width, self._icon.height), rl.BLACK)
       for icon, alpha in ((self._icon, 1.0 - self._active_alpha.x), (self._filled_icon, self._active_alpha.x)):
         rl.draw_texture_ex(icon, rl.Vector2(icon_x, icon_y), 0.0, 1.0, rl.Color(255, 255, 255, round(255 * alpha)))
 
@@ -320,7 +319,6 @@ class AugmentedRoadView(CameraView):
 
     # Fade out bottom of overlays for looks
     rl.draw_texture_ex(self._fade_texture, rl.Vector2(self._content_rect.x, self._content_rect.y), 0.0, 1.0, rl.WHITE)
-    self._draw_onroad_ui_backings()
 
     # Hide DMoji when disengaged unless AlwaysOnDM is enabled
     should_draw_dmoji = (not self._hud_renderer.drawing_top_icons() and
@@ -362,28 +360,6 @@ class AugmentedRoadView(CameraView):
 
     self._bookmark_icon.render(self.rect)
 
-  def _draw_onroad_ui_backings(self) -> None:
-    """Draw black panels beneath HUD groups without darkening the whole camera view."""
-    rect = self._content_rect
-    panel_color = rl.BLACK
-
-    left_width = min(220.0, rect.width * 0.40)
-    left_height = min(190.0, rect.height * 0.80)
-    rl.draw_rectangle_rec(rl.Rectangle(rect.x, rect.y, left_width, left_height), panel_color)
-
-    date_width = min(220.0, rect.width * 0.42)
-    date_height = min(150.0, rect.height * 0.62)
-    rl.draw_rectangle_rec(
-      rl.Rectangle(rect.x + rect.width - date_width, rect.y, date_width, date_height),
-      panel_color,
-    )
-
-    radius = min(105.0, rect.height * 0.21)
-    if radius >= 24:
-      center_x = rect.x + rect.width - radius - 24
-      center_y = rect.y + rect.height - radius - 24
-      rl.draw_circle(int(center_x), int(center_y), radius + 12, panel_color)
-
   def _request_screenshot(self) -> None:
     self._control_press = None
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -422,10 +398,15 @@ class AugmentedRoadView(CameraView):
     if radius < 24:
       return
 
-    # Onroad uses the right edge; offroad leaves room for the eGPU indicator at the corner.
-    right_margin = 24 if ui_state.started else 110
-    center_x = rect.x + rect.width - radius - right_margin
-    center_y = rect.y + rect.height - radius - 24
+    if ui_state.started:
+      _, _, _, ai_x, _, ai_extent = self._ai_label_layout(rect)
+      desired_x = ai_x + ai_extent.x / 2
+      hand_reach = radius * 0.68
+      center_x = max(rect.x + hand_reach + 8,
+                     min(desired_x, rect.x + rect.width - hand_reach - 8))
+    else:
+      center_x = rect.x + rect.width - radius - 110
+    center_y = rect.y + rect.height - radius - 8
     center = rl.Vector2(center_x, center_y)
     now = datetime.now(ZoneInfo("America/Los_Angeles"))
     minutes = now.minute + now.second / 60.0
@@ -464,8 +445,7 @@ class AugmentedRoadView(CameraView):
                                rect.y + 24 + weekday_extent.y),
                     day_size, 0, rl.WHITE)
 
-  def _draw_ai_label(self) -> None:
-    rect = self._content_rect
+  def _ai_label_layout(self, rect: rl.Rectangle):
     now = datetime.now(ZoneInfo("America/Los_Angeles"))
     font = gui_app.font(FontWeight.DISPLAY)
     text = "AI"
@@ -481,7 +461,10 @@ class AugmentedRoadView(CameraView):
     y += (day_extent.y - extent.y) / 2
     if x + extent.x > rect.x + rect.width - 8:
       x = center_x - day_extent.x / 2 - 12 - extent.x
+    return font, text, font_size, x, y, extent
 
+  def _draw_ai_label(self) -> None:
+    font, text, font_size, x, y, _ = self._ai_label_layout(self._content_rect)
     rl.draw_text_ex(font, text, rl.Vector2(x + 2, y + 2), font_size, 0, rl.Color(0, 0, 0, 190))
     car_state = ui_state.sm["carState"]
     pedal_override = car_state.gasPressed or car_state.brakePressed or any(
