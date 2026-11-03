@@ -1,5 +1,6 @@
 import math
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -43,6 +44,8 @@ class BookmarkState(IntEnum):
 
 WIDE_CAM_MAX_SPEED = 5.0  # m/s (11 mph)
 ROAD_CAM_MIN_SPEED = 10.0  # m/s (22 mph)
+SCREENSHOT_LONG_TOUCH_SECONDS = 1.5
+SCREENSHOT_STATUS_SECONDS = 3.0
 
 CAM_Y_OFFSET = 20
 
@@ -178,6 +181,8 @@ class AugmentedRoadView(CameraView):
     self._offset_controls_until = 0.0
     self._steer_ratio_controls_until = 0.0
     self._camera_offset_value = float(ui_state.params.get("CameraOffset", return_default=True))
+    self._screenshot_status = ""
+    self._screenshot_status_until = 0.0
 
     # Bookmark icon with swipe gesture
     self._bookmark_icon = BookmarkIcon(bookmark_callback)
@@ -230,6 +235,10 @@ class AugmentedRoadView(CameraView):
     dx = mouse_pos.x - start_x
     dy = mouse_pos.y - start_y
     now = rl.get_time()
+
+    if now - pressed_at >= SCREENSHOT_LONG_TOUCH_SECONDS and dx * dx + dy * dy <= 30 ** 2:
+      self._request_screenshot()
+      return
 
     # Hold for 0.6 seconds anywhere on the HUD to open fixed steer-ratio controls.
     if now - pressed_at >= 0.6 and (dx * dx + dy * dy) <= 45 ** 2:
@@ -330,7 +339,9 @@ class AugmentedRoadView(CameraView):
     self._hud_renderer.render(self._content_rect)
     self._draw_analog_clock_hands()
     self._draw_day_date()
+    self._draw_ai_label()
     self._draw_camera_and_steer_controls()
+    self._draw_screenshot_status()
 
     # Draw fake rounded border
     rl.draw_rectangle_rounded_lines_ex(self._content_rect, 0.2 * 1.02, 10, 50, rl.BLACK)
@@ -346,6 +357,37 @@ class AugmentedRoadView(CameraView):
       self._confidence_ball.render(self.rect)
 
     self._bookmark_icon.render(self.rect)
+
+  def _request_screenshot(self) -> None:
+    self._control_press = None
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    gui_app.request_screenshot(
+      Path("/data/media/0/screenshot") / f"openpilot_{timestamp}.png",
+      on_saved=lambda: self._set_screenshot_status("SAVED"),
+      on_failed=lambda: self._set_screenshot_status("SAVE FAILED"),
+    )
+
+  def _set_screenshot_status(self, status: str) -> None:
+    self._screenshot_status = status
+    self._screenshot_status_until = rl.get_time() + SCREENSHOT_STATUS_SECONDS
+
+  def _draw_screenshot_status(self) -> None:
+    if not self._screenshot_status or rl.get_time() >= self._screenshot_status_until:
+      return
+
+    font = gui_app.font(FontWeight.DISPLAY)
+    size = 40
+    text = self._screenshot_status
+    extent = rl.measure_text_ex(font, text, size, 0)
+    x = self.rect.x + (self.rect.width - extent.x) / 2
+    y = self.rect.y + self.rect.height * 0.15
+    padding_x, padding_y = 24, 14
+    rl.draw_rectangle_rec(
+      rl.Rectangle(x - padding_x, y - padding_y, extent.x + padding_x * 2, extent.y + padding_y * 2),
+      rl.Color(0, 0, 0, 220),
+    )
+    color = rl.GREEN if text == "SAVED" else rl.RED
+    rl.draw_text_ex(font, text, rl.Vector2(x, y), size, 0, color)
 
 
   def _draw_analog_clock_hands(self) -> None:
@@ -363,7 +405,7 @@ class AugmentedRoadView(CameraView):
     hours = (now.hour % 12) + minutes / 60.0
     hands = (
       (-90 + hours * 30, radius * 0.50, 8.0, rl.WHITE),
-      (-90 + minutes * 6, radius * 0.84, 6.0, rl.WHITE),
+      (-90 + minutes * 6, radius * 0.68, 6.0, rl.WHITE),
     )
     for angle, length, thickness, color in hands:
       end = rl.Vector2(center_x + math.cos(math.radians(angle)) * length,
@@ -394,6 +436,28 @@ class AugmentedRoadView(CameraView):
                     rl.Vector2(center_x - day_extent.x / 2,
                                rect.y + 24 + weekday_extent.y),
                     day_size, 0, rl.WHITE)
+
+  def _draw_ai_label(self) -> None:
+    rect = self._content_rect
+    now = datetime.now(ZoneInfo("America/Los_Angeles"))
+    font = gui_app.font(FontWeight.DISPLAY)
+    text = "AI"
+    font_size = 30
+    extent = rl.measure_text_ex(font, text, font_size, 0)
+    radius = min(105.0, rect.height * 0.21)
+    center_x = rect.x + rect.width - 24 - radius
+    day = now.strftime("%d").lstrip("0") or "0"
+    day_size = min(88.0, rect.height * 0.19)
+    day_extent = rl.measure_text_ex(font, day, day_size, 0)
+    x = center_x + day_extent.x / 2 + 12
+    y = rect.y + 24 + rl.measure_text_ex(font, now.strftime("%a").upper(), min(24.0, rect.height * 0.055), 0).y
+    y += (day_extent.y - extent.y) / 2
+    if x + extent.x > rect.x + rect.width - 8:
+      x = center_x - day_extent.x / 2 - 12 - extent.x
+
+    rl.draw_text_ex(font, text, rl.Vector2(x + 2, y + 2), font_size, 0, rl.Color(0, 0, 0, 190))
+    color = rl.Color(0, 255, 80, 255) if self._hud_renderer.is_cruise_set else rl.WHITE
+    rl.draw_text_ex(font, text, rl.Vector2(x, y), font_size, 0, color)
 
   def _draw_camera_and_steer_controls(self) -> None:
     now = rl.get_time()
