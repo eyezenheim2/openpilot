@@ -254,6 +254,9 @@ class GuiApplication(GuiApplicationExt):
     self._mouse = MouseState(self._scale)
     self._mouse_events: list[MouseEvent] = []
     self._last_mouse_event: MouseEvent = MouseEvent(MousePos(0, 0), 0, False, False, False, 0.0)
+    self._screenshot_path: Path | None = None
+    self._screenshot_saved_callback: Callable[[], None] | None = None
+    self._screenshot_failed_callback: Callable[[], None] | None = None
 
     self._should_render = True
 
@@ -605,6 +608,14 @@ class GuiApplication(GuiApplicationExt):
   def last_mouse_event(self) -> MouseEvent:
     return self._last_mouse_event
 
+  def request_screenshot(self, path: str | Path,
+                         on_saved: Callable[[], None] | None = None,
+                         on_failed: Callable[[], None] | None = None) -> None:
+    """Capture the fully composed display on the current render frame."""
+    self._screenshot_path = Path(path)
+    self._screenshot_saved_callback = on_saved
+    self._screenshot_failed_callback = on_failed
+
   def render(self):
     try:
       if self._profile_render_frames > 0:
@@ -687,6 +698,33 @@ class GuiApplication(GuiApplicationExt):
           self._draw_grid()
 
         rl.end_drawing()
+
+        if self._screenshot_path is not None:
+          screenshot_path, self._screenshot_path = self._screenshot_path, None
+          on_saved, self._screenshot_saved_callback = self._screenshot_saved_callback, None
+          on_failed, self._screenshot_failed_callback = self._screenshot_failed_callback, None
+          image = None
+          try:
+            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+            # Capture the completed frame after EndDrawing swaps it to the screen.
+            image = rl.load_image_from_screen()
+            if image.data == rl.ffi.NULL or image.width <= 0 or image.height <= 0:
+              raise RuntimeError("Raylib returned an empty screen image")
+            if not rl.export_image(image, str(screenshot_path)):
+              raise OSError(f"Raylib could not export screenshot to {screenshot_path}")
+            if screenshot_path.is_file() and screenshot_path.stat().st_size > 0:
+              cloudlog.info(f"Screenshot saved to {screenshot_path}")
+              if on_saved is not None:
+                on_saved()
+            else:
+              raise OSError(f"Screenshot file is missing or empty: {screenshot_path}")
+          except Exception:
+            cloudlog.exception(f"Failed to save screenshot to {screenshot_path}")
+            if on_failed is not None:
+              on_failed()
+          finally:
+            if image is not None and image.data != rl.ffi.NULL:
+              rl.unload_image(image)
 
         if RECORD:
           image = rl.load_image_from_texture(self._render_texture.texture)
