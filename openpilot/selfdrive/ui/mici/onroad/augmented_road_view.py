@@ -408,6 +408,16 @@ class AugmentedRoadView(CameraView):
       center_x = rect.x + rect.width - radius - 110
     center_y = rect.y + rect.height - radius - 8
     center = rl.Vector2(center_x, center_y)
+    if not ui_state.started:
+      dial_color = rl.Color(220, 228, 238, 190)
+      rl.draw_circle_lines(int(center_x), int(center_y), radius, dial_color)
+      for hour in range(12):
+        angle = math.radians(-90 + hour * 30)
+        outer = rl.Vector2(center_x + math.cos(angle) * radius * 0.88,
+                           center_y + math.sin(angle) * radius * 0.88)
+        inner = rl.Vector2(center_x + math.cos(angle) * radius * 0.78,
+                           center_y + math.sin(angle) * radius * 0.78)
+        rl.draw_line_ex(inner, outer, 3.0, dial_color)
     now = datetime.now(ZoneInfo("America/Los_Angeles"))
     minutes = now.minute + now.second / 60.0
     hours = (now.hour % 12) + minutes / 60.0
@@ -423,6 +433,8 @@ class AugmentedRoadView(CameraView):
                       rl.Vector2(end.x + shadow_offset.x, end.y + shadow_offset.y),
                       thickness + 4, rl.Color(0, 0, 0, 210))
       rl.draw_line_ex(center, end, thickness, color)
+    if not ui_state.started:
+      rl.draw_circle(int(center_x), int(center_y), 5, rl.WHITE)
 
   def _draw_day_date(self) -> None:
     rect = self._content_rect
@@ -449,7 +461,7 @@ class AugmentedRoadView(CameraView):
     now = datetime.now(ZoneInfo("America/Los_Angeles"))
     font = gui_app.font(FontWeight.DISPLAY)
     text = "AI"
-    font_size = 30
+    font_size = 36
     extent = rl.measure_text_ex(font, text, font_size, 0)
     radius = min(105.0, rect.height * 0.21)
     center_x = rect.x + rect.width - 24 - radius
@@ -472,6 +484,9 @@ class AugmentedRoadView(CameraView):
       for event in ui_state.sm["onroadEvents"]
     )
     if pedal_override or not self._hud_renderer.is_cruise_set:
+      color = rl.GRAY
+    elif (ui_state.sm["selfdriveState"].enabled and ui_state.has_longitudinal_control and
+          ui_state.sm["carControl"].longActive):
       color = rl.Color(0, 255, 80, 255)
     elif ui_state.engaged:
       color = rl.Color(0, 128, 40, 255)
