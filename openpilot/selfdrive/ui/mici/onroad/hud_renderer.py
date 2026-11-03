@@ -403,6 +403,10 @@ class HudRenderer(Widget):
       text_size = rl.measure_text_ex(self._font_display, speed_text, font_size, 0)
       text_pos = rl.Vector2(rect.x + (rect.width - text_size.x) / 2,
                             rect.y + (rect.height - text_size.y) / 2)
+      rl.draw_rectangle_rec(
+        rl.Rectangle(text_pos.x - 18, text_pos.y - 12, text_size.x + 36, text_size.y + 24),
+        rl.BLACK,
+      )
       rl.draw_text_ex(self._font_display, speed_text,
                       rl.Vector2(text_pos.x + 4, text_pos.y + 4), font_size, 0, rl.BLACK)
       rl.draw_text_ex(self._font_display, speed_text, text_pos, font_size, 0, rl.WHITE)
