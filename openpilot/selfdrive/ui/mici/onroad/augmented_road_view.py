@@ -186,6 +186,7 @@ class AugmentedRoadView(CameraView):
     self._last_active_gear = None
     self._gear_popup_letter = None
     self._gear_popup_until = 0.0
+    self._clock_icon_size = 100
 
     # Bookmark icon with swipe gesture
     self._bookmark_icon = BookmarkIcon(bookmark_callback)
@@ -286,7 +287,7 @@ class AugmentedRoadView(CameraView):
       self._content_rect = self.rect
       rl.draw_rectangle_rec(self.rect, rl.BLACK)
       self._offroad_label.render(self._rect)
-      self._draw_analog_clock_hands()
+      self._draw_analog_clock_icon()
       return
 
     self._switch_stream_if_needed(ui_state.sm)
@@ -343,7 +344,7 @@ class AugmentedRoadView(CameraView):
     self._hud_renderer.set_wheel_critical_icon(alert_to_render is not None and not not_animating_out and
                                                alert_to_render.visual_alert == car.CarControl.HUDControl.VisualAlert.steerRequired)
     self._hud_renderer.render(self._content_rect)
-    self._draw_analog_clock_hands()
+    self._draw_analog_clock_icon()
     self._draw_day_date()
     self._draw_fuel_gauge()
     self._draw_brake_pressure_percent()
@@ -407,34 +408,31 @@ class AugmentedRoadView(CameraView):
       rl.Rectangle(rect.x, rect.y + rect.height - bottom_height, rect.width, bottom_height), rl.BLACK)
 
 
-  def _draw_analog_clock_hands(self) -> None:
+  def _draw_analog_clock_icon(self) -> None:
     rect = self._content_rect
-    # Keep the clock large while drawing only its hands.
-    radius = min(60.0, rect.height * 0.12)
-    if radius < 24:
-      return
-
+    clock_size = self._clock_icon_size
+    radius = clock_size * 0.40
+    hand_scale = 1.5
+    hand_reach = radius * 0.84 * hand_scale
     if ui_state.started:
-      center_x = rect.x + radius + 8
+      center_x = rect.x + hand_reach + 8
     else:
-      center_x = rect.x + rect.width - radius - 110
-    center_y = rect.y + rect.height - radius + 2
-    center = rl.Vector2(center_x, center_y)
+      center_x = rect.x + rect.width - hand_reach - 110
+    center_y = rect.y + rect.height - hand_reach
+
     now = datetime.now(ZoneInfo("America/Los_Angeles"))
-    minutes = now.minute + now.second / 60.0
-    hours = (now.hour % 12) + minutes / 60.0
+    seconds = now.second + now.microsecond / 1_000_000
+    minutes = now.minute + seconds / 60
+    hours = (now.hour % 12) + minutes / 60
     hands = (
-      (-90 + hours * 30, radius * 0.50, 8.0, rl.WHITE),
-      (-90 + minutes * 6, radius * 0.68, 6.0, rl.WHITE),
+      (-90 + hours * 30, radius * 0.50 * hand_scale, 4.0 * hand_scale),
+      (-90 + minutes * 6, radius * 0.72 * hand_scale, 3.0 * hand_scale),
     )
-    for angle, length, thickness, color in hands:
+    center = rl.Vector2(center_x, center_y)
+    for angle, length, thickness in hands:
       end = rl.Vector2(center_x + math.cos(math.radians(angle)) * length,
                        center_y + math.sin(math.radians(angle)) * length)
-      shadow_offset = rl.Vector2(3, 3)
-      rl.draw_line_ex(rl.Vector2(center.x + shadow_offset.x, center.y + shadow_offset.y),
-                      rl.Vector2(end.x + shadow_offset.x, end.y + shadow_offset.y),
-                      thickness + 4, rl.Color(0, 0, 0, 210))
-      rl.draw_line_ex(center, end, thickness, color)
+      rl.draw_line_ex(center, end, thickness, rl.WHITE)
 
   def _draw_day_date(self) -> None:
     rect = self._content_rect
@@ -488,7 +486,7 @@ class AugmentedRoadView(CameraView):
     percent_font_size = max_radius * 1.8
     percent_extent = rl.measure_text_ex(font, percent_text, percent_font_size, 0)
     gauge_center_x = rect.x + rect.width / 2
-    gauge_y = rect.y + 12 + 25 + 24
+    gauge_y = rect.y + 32 + 25 + 24
     percent_x = gauge_center_x - percent_extent.x / 2
     percent_y = gauge_y + max_radius + 10 - percent_extent.y / 2
     glow_alpha = int(35 + 160 * brake_pressure)
@@ -528,7 +526,7 @@ class AugmentedRoadView(CameraView):
     gear_step = 36.0
     gear_width = gear_step * 5
     gear_left = rect.x + (rect.width - gear_width) / 2
-    gear_center_y = rect.y + 12 + 25
+    gear_center_y = rect.y + 32 + 25
     gray = rl.Color(150, 155, 160, 255)
 
     font = gui_app.font(FontWeight.DISPLAY)
