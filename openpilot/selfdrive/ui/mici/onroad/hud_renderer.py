@@ -252,7 +252,6 @@ class HudRenderer(Widget):
 
     self._draw_model_source(rect)
 
-    self._draw_steering_wheel(rect)
     # Draw speed last so the enlarged readout stays legible over the rest of the HUD.
     self._draw_current_speed(rect)
 
