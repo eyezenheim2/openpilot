@@ -183,6 +183,9 @@ class AugmentedRoadView(CameraView):
     self._camera_offset_value = float(ui_state.params.get("CameraOffset", return_default=True))
     self._screenshot_status = ""
     self._screenshot_status_until = 0.0
+    self._last_active_gear = None
+    self._gear_popup_letter = None
+    self._gear_popup_until = 0.0
 
     # Bookmark icon with swipe gesture
     self._bookmark_icon = BookmarkIcon(bookmark_callback)
@@ -314,6 +317,8 @@ class AugmentedRoadView(CameraView):
     # Render the base camera view
     super()._render(self._content_rect)
 
+    self._draw_hud_backing(self._content_rect)
+
     # Draw all UI overlays
     self._model_renderer.render(self._content_rect)
 
@@ -337,11 +342,14 @@ class AugmentedRoadView(CameraView):
     self._hud_renderer.set_can_draw_top_icons(alert_to_render is None)
     self._hud_renderer.set_wheel_critical_icon(alert_to_render is not None and not not_animating_out and
                                                alert_to_render.visual_alert == car.CarControl.HUDControl.VisualAlert.steerRequired)
-    self._alert_renderer.render(self._content_rect)
     self._hud_renderer.render(self._content_rect)
     self._draw_analog_clock_hands()
     self._draw_day_date()
-    self._draw_ai_label()
+    self._draw_fuel_gauge()
+    self._draw_brake_pressure_percent()
+    self._draw_gear_change_popup()
+    # Keep alert popups above the HUD text and background.
+    self._alert_renderer.render(self._content_rect)
     self._draw_camera_and_steer_controls()
     self._draw_screenshot_status()
 
@@ -391,33 +399,27 @@ class AugmentedRoadView(CameraView):
     color = rl.GREEN if text == "SAVED" else rl.RED
     rl.draw_text_ex(font, text, rl.Vector2(x, y), size, 0, color)
 
+  def _draw_hud_backing(self, rect: rl.Rectangle) -> None:
+    top_height = min(170, max(110, int(rect.height * 0.22)))
+    bottom_height = min(220, max(140, int(rect.height * 0.36)))
+    rl.draw_rectangle_rec(rl.Rectangle(rect.x, rect.y, rect.width, top_height), rl.BLACK)
+    rl.draw_rectangle_rec(
+      rl.Rectangle(rect.x, rect.y + rect.height - bottom_height, rect.width, bottom_height), rl.BLACK)
+
 
   def _draw_analog_clock_hands(self) -> None:
     rect = self._content_rect
-    radius = min(105.0, rect.height * 0.21)
+    # Keep the clock large while drawing only its hands.
+    radius = min(60.0, rect.height * 0.12)
     if radius < 24:
       return
 
     if ui_state.started:
-      _, _, _, ai_x, _, ai_extent = self._ai_label_layout(rect)
-      desired_x = ai_x + ai_extent.x / 2
-      hand_reach = radius * 0.68
-      center_x = max(rect.x + hand_reach + 8,
-                     min(desired_x, rect.x + rect.width - hand_reach - 8))
+      center_x = rect.x + radius + 8
     else:
       center_x = rect.x + rect.width - radius - 110
-    center_y = rect.y + rect.height - radius - 8
+    center_y = rect.y + rect.height - radius + 2
     center = rl.Vector2(center_x, center_y)
-    if not ui_state.started:
-      dial_color = rl.Color(220, 228, 238, 190)
-      rl.draw_circle_lines(int(center_x), int(center_y), radius, dial_color)
-      for hour in range(12):
-        angle = math.radians(-90 + hour * 30)
-        outer = rl.Vector2(center_x + math.cos(angle) * radius * 0.88,
-                           center_y + math.sin(angle) * radius * 0.88)
-        inner = rl.Vector2(center_x + math.cos(angle) * radius * 0.78,
-                           center_y + math.sin(angle) * radius * 0.78)
-        rl.draw_line_ex(inner, outer, 3.0, dial_color)
     now = datetime.now(ZoneInfo("America/Los_Angeles"))
     minutes = now.minute + now.second / 60.0
     hours = (now.hour % 12) + minutes / 60.0
@@ -433,8 +435,6 @@ class AugmentedRoadView(CameraView):
                       rl.Vector2(end.x + shadow_offset.x, end.y + shadow_offset.y),
                       thickness + 4, rl.Color(0, 0, 0, 210))
       rl.draw_line_ex(center, end, thickness, color)
-    if not ui_state.started:
-      rl.draw_circle(int(center_x), int(center_y), 5, rl.WHITE)
 
   def _draw_day_date(self) -> None:
     rect = self._content_rect
@@ -457,42 +457,143 @@ class AugmentedRoadView(CameraView):
                                rect.y + 24 + weekday_extent.y),
                     day_size, 0, rl.WHITE)
 
-  def _ai_label_layout(self, rect: rl.Rectangle):
-    now = datetime.now(ZoneInfo("America/Los_Angeles"))
-    font = gui_app.font(FontWeight.DISPLAY)
-    text = "AI"
-    font_size = 36
-    extent = rl.measure_text_ex(font, text, font_size, 0)
-    radius = min(105.0, rect.height * 0.21)
-    center_x = rect.x + rect.width - 24 - radius
-    day = now.strftime("%d").lstrip("0") or "0"
-    day_size = min(88.0, rect.height * 0.19)
-    day_extent = rl.measure_text_ex(font, day, day_size, 0)
-    x = center_x + day_extent.x / 2 + 12
-    y = rect.y + 24 + rl.measure_text_ex(font, now.strftime("%a").upper(), min(24.0, rect.height * 0.055), 0).y
-    y += (day_extent.y - extent.y) / 2
-    if x + extent.x > rect.x + rect.width - 8:
-      x = center_x - day_extent.x / 2 - 12 - extent.x
-    return font, text, font_size, x, y, extent
+  def _ai_brake_pressure(self) -> float:
+    car_control = ui_state.sm["carControl"]
+    if not ui_state.has_longitudinal_control or not car_control.longActive:
+      return 0.0
 
-  def _draw_ai_label(self) -> None:
-    font, text, font_size, x, y, _ = self._ai_label_layout(self._content_rect)
-    rl.draw_text_ex(font, text, rl.Vector2(x + 2, y + 2), font_size, 0, rl.Color(0, 0, 0, 190))
+    # The longitudinal controller expresses braking as negative acceleration.
+    return max(0.0, min(1.0, -float(car_control.actuators.accel) / 4.0))
+
+  @staticmethod
+  def _brake_pressure_color(brake_pressure: float) -> rl.Color:
+    color_stops = ((255, 205, 105), (255, 145, 0), (255, 45, 20), (255, 0, 35))
+    color_position = brake_pressure * (len(color_stops) - 1)
+    color_index = min(int(color_position), len(color_stops) - 2)
+    blend = color_position - color_index
+    start_color, end_color = color_stops[color_index:color_index + 2]
+    red, green, blue = (int(start + (end - start) * blend)
+                        for start, end in zip(start_color, end_color))
+    return rl.Color(red, green, blue, 255)
+
+  def _draw_brake_pressure_percent(self) -> None:
+    brake_pressure = self._ai_brake_pressure()
+    if brake_pressure <= 0.01:
+      return
+
+    rect = self._content_rect
+    percent_text = f"{round(brake_pressure * 100)}%"
+    font = gui_app.font(FontWeight.DISPLAY)
+    max_radius = min(32.0, rect.height * 0.08)
+    percent_font_size = max_radius * 1.8
+    percent_extent = rl.measure_text_ex(font, percent_text, percent_font_size, 0)
+    gauge_center_x = rect.x + rect.width / 2
+    gauge_y = rect.y + 12 + 25 + 24
+    percent_x = gauge_center_x - percent_extent.x / 2
+    percent_y = gauge_y + max_radius + 10 - percent_extent.y / 2
+    glow_alpha = int(35 + 160 * brake_pressure)
+    color = self._brake_pressure_color(brake_pressure)
+    glow = rl.Color(color.r, color.g, color.b, glow_alpha)
+    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+      rl.draw_text_ex(font, percent_text, rl.Vector2(percent_x + dx, percent_y + dy),
+                      percent_font_size, 0, glow)
+    rl.draw_text_ex(font, percent_text, rl.Vector2(percent_x, percent_y),
+                    percent_font_size, 0, color)
+
+  def _draw_fuel_gauge(self) -> None:
+    rect = self._content_rect
     car_state = ui_state.sm["carState"]
-    pedal_override = car_state.gasPressed or car_state.brakePressed or any(
-      event.name == log.OnroadEvent.EventName.gasPressedOverride
-      for event in ui_state.sm["onroadEvents"]
-    )
-    if pedal_override or not self._hud_renderer.is_cruise_set:
-      color = rl.GRAY
-    elif (ui_state.sm["selfdriveState"].enabled and ui_state.has_longitudinal_control and
-          ui_state.sm["carControl"].longActive):
-      color = rl.Color(0, 255, 80, 255)
-    elif ui_state.engaged:
-      color = rl.Color(0, 128, 40, 255)
+    fuel = float(car_state.fuelGauge)
+    if fuel > 1.0:
+      fuel /= 100.0
+    fuel = max(0.0, min(1.0, fuel))
+    gear = car_state.gearShifter
+    gear_shifter = car.CarState.GearShifter
+    active_gear = {
+      gear_shifter.park: "P",
+      gear_shifter.reverse: "R",
+      gear_shifter.neutral: "N",
+      gear_shifter.drive: "D",
+      gear_shifter.low: "L",
+    }.get(gear)
+    if active_gear is None:
+      gear_name = str(gear).lower().rsplit(".", 1)[-1]
+      active_gear = {"park": "P", "reverse": "R", "neutral": "N", "drive": "D", "low": "L"}.get(gear_name)
+    if active_gear is not None and active_gear != self._last_active_gear:
+      self._gear_popup_letter = active_gear
+      self._gear_popup_until = 0.0 if active_gear == "R" else rl.get_time() + 3.0
+    self._last_active_gear = active_gear
+
+    # Center PRNDL over an E-to-F dash gauge.
+    gear_step = 36.0
+    gear_width = gear_step * 5
+    gear_left = rect.x + (rect.width - gear_width) / 2
+    gear_center_y = rect.y + 12 + 25
+    gray = rl.Color(150, 155, 160, 255)
+
+    font = gui_app.font(FontWeight.DISPLAY)
+    for index, letter in enumerate("PRNDL"):
+      color = rl.Color(0, 255, 80, 255) if letter == active_gear else gray
+      extent = rl.measure_text_ex(font, letter, 34, 0)
+      x = gear_left + index * gear_step + (gear_step - extent.x) / 2
+      y = gear_center_y - extent.y / 2
+      rl.draw_text_ex(font, letter, rl.Vector2(x, y), 34, 0, color)
+
+    dash_count = 10
+    dash_width = 9.0
+    dash_gap = 4.0
+    dash_total_width = dash_count * dash_width + (dash_count - 1) * dash_gap
+    fuel_label_size = 14
+    zero_extent = rl.measure_text_ex(font, "0%", fuel_label_size, 0)
+    full_extent = rl.measure_text_ex(font, "100%", fuel_label_size, 0)
+    gauge_width = zero_extent.x + 7 + dash_total_width + 7 + full_extent.x
+    gauge_left = rect.x + (rect.width - gauge_width) / 2
+    gauge_y = gear_center_y + 24
+    rl.draw_text_ex(font, "0%", rl.Vector2(gauge_left, gauge_y - zero_extent.y / 2),
+                    fuel_label_size, 0, gray)
+    dash_left = gauge_left + zero_extent.x + 7
+    filled_dashes = math.ceil(fuel * dash_count) if fuel > 0.0 else 0
+    brake_pressure = self._ai_brake_pressure()
+    braking = brake_pressure > 0.01
+    if braking:
+      filled_dashes = max(1, round(brake_pressure * dash_count))
+      fill_color = self._brake_pressure_color(brake_pressure)
     else:
-      color = rl.WHITE
-    rl.draw_text_ex(font, text, rl.Vector2(x, y), font_size, 0, color)
+      fill_color = rl.Color(0, 255, 80, 255)
+    for index in range(dash_count):
+      color = fill_color if index < filled_dashes else gray
+      rl.draw_rectangle_rec(rl.Rectangle(dash_left + index * (dash_width + dash_gap),
+                                           gauge_y - 2, dash_width, 4), color)
+    full_x = dash_left + dash_total_width + 7
+    rl.draw_text_ex(font, "100%", rl.Vector2(full_x, gauge_y - full_extent.y / 2),
+                    fuel_label_size, 0, gray)
+
+  def _draw_gear_change_popup(self) -> None:
+    if (self._gear_popup_letter is None or
+        (self._gear_popup_letter != "R" and rl.get_time() >= self._gear_popup_until)):
+      return
+
+    rect = self._content_rect
+    size = min(190.0, rect.height * 0.62)
+    center_x = rect.x + rect.width / 2
+    center_y = rect.y + rect.height * 0.60
+    box = rl.Rectangle(center_x - size / 2, center_y - size / 2, size, size)
+    green = rl.Color(0, 255, 80, 255)
+    for padding, thickness, alpha in ((9.0, 12.0, 30), (5.0, 7.0, 80)):
+      glow = rl.Rectangle(box.x - padding, box.y - padding,
+                          box.width + padding * 2, box.height + padding * 2)
+      rl.draw_rectangle_rounded_lines_ex(
+        glow, 0.18, 10, thickness, rl.Color(0, 255, 80, alpha))
+    rl.draw_rectangle_rounded(box, 0.18, 10, rl.Color(0, 0, 0, 235))
+    rl.draw_rectangle_rounded_lines_ex(box, 0.18, 10, 6.0, green)
+
+    font = gui_app.font(FontWeight.DISPLAY)
+    font_size = size * 0.68
+    extent = rl.measure_text_ex(font, self._gear_popup_letter, font_size, 0)
+    rl.draw_text_ex(font, self._gear_popup_letter,
+                    rl.Vector2(box.x + (box.width - extent.x) / 2,
+                               box.y + (box.height - extent.y) / 2),
+                    font_size, 0, rl.WHITE)
 
   def _draw_camera_and_steer_controls(self) -> None:
     now = rl.get_time()
