@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import time
 from numbers import Number
 
 from openpilot.cereal import log
@@ -29,6 +30,11 @@ LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
+FIXED_STEER_RATIO_PARAM = "FixedSteerRatio"
+STEER_RATIO_MIN_FACTOR = 0.75
+STEER_RATIO_MAX_FACTOR = 1.25
+STEER_RATIO_ABSOLUTE_MAX = 23.33
+FIXED_STEER_RATIO_POLL_INTERVAL = 0.25
 
 
 class Controls(ControlsExt):
@@ -58,6 +64,9 @@ class Controls(ControlsExt):
 
     self.LoC = LongControl(self.CP, self.CP_SP)
     self.VM = VehicleModel(self.CP)
+    self._fixed_steer_ratio = None
+    self._fixed_steer_ratio_poll_time = 0.0
+    self._fixed_steer_ratio_logged = None
     self.LaC: LatControl
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
       self.LaC = LatControlAngle(self.CP, self.CP_SP, self.CI, DT_CTRL)
@@ -85,6 +94,32 @@ class Controls(ControlsExt):
     lp = self.sm['vehicleParameters']
     x = max(lp.stiffnessFactor, 0.1)
     sr = max(lp.steerRatio, 0.1)
+
+    # Poll Params periodically so a UI change applies without a restart.
+    now = time.monotonic()
+    if now >= self._fixed_steer_ratio_poll_time:
+      self._fixed_steer_ratio_poll_time = now + FIXED_STEER_RATIO_POLL_INTERVAL
+      value = self.params.get(FIXED_STEER_RATIO_PARAM)
+      try:
+        fixed_ratio = float(value) if value not in (None, "") else None
+      except (TypeError, ValueError):
+        fixed_ratio = None
+
+      stock_ratio = max(float(self.CP.steerRatio), 0.1)
+      min_ratio = min(stock_ratio * STEER_RATIO_MIN_FACTOR, STEER_RATIO_ABSOLUTE_MAX)
+      max_ratio = max(min_ratio, min(stock_ratio * STEER_RATIO_MAX_FACTOR, STEER_RATIO_ABSOLUTE_MAX))
+      self._fixed_steer_ratio = (fixed_ratio if fixed_ratio is not None and
+                                 math.isfinite(fixed_ratio) and min_ratio <= fixed_ratio <= max_ratio else None)
+
+      if self._fixed_steer_ratio != self._fixed_steer_ratio_logged:
+        if self._fixed_steer_ratio is None:
+          cloudlog.info("Fixed steer ratio disabled; using learned vehicle ratio")
+        else:
+          cloudlog.info(f"Fixed steer ratio active: {self._fixed_steer_ratio:.1f}")
+        self._fixed_steer_ratio_logged = self._fixed_steer_ratio
+
+    if self._fixed_steer_ratio is not None:
+      sr = self._fixed_steer_ratio
     self.VM.update_params(x, sr)
 
     steer_angle_without_offset = math.radians(CS.steeringAngleDeg - lp.angleOffsetDeg)
