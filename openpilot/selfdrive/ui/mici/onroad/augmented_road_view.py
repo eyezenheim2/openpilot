@@ -1,3 +1,8 @@
+import math
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
 import numpy as np
 import pyray as rl
 from openpilot.cereal import log
@@ -39,6 +44,8 @@ class BookmarkState(IntEnum):
 
 WIDE_CAM_MAX_SPEED = 5.0  # m/s (11 mph)
 ROAD_CAM_MIN_SPEED = 10.0  # m/s (22 mph)
+SCREENSHOT_LONG_TOUCH_SECONDS = 1.5
+SCREENSHOT_STATUS_SECONDS = 3.0
 
 CAM_Y_OFFSET = 20
 
@@ -170,6 +177,16 @@ class AugmentedRoadView(CameraView):
     self._cached_matrix: np.ndarray | None = None
     self._content_rect = rl.Rectangle()
     self._last_click_time = 0.0
+    self._control_press: tuple[float, float, float] | None = None
+    self._offset_controls_until = 0.0
+    self._steer_ratio_controls_until = 0.0
+    self._camera_offset_value = float(ui_state.params.get("CameraOffset", return_default=True))
+    self._screenshot_status = ""
+    self._screenshot_status_until = 0.0
+    self._last_active_gear = None
+    self._gear_popup_letter = None
+    self._gear_popup_until = 0.0
+    self._clock_icon_size = 100
 
     # Bookmark icon with swipe gesture
     self._bookmark_icon = BookmarkIcon(bookmark_callback)
@@ -203,16 +220,74 @@ class AugmentedRoadView(CameraView):
     else:
       self._offroad_label.set_text("start the car to\nuse sunnypilot")
 
+  def _handle_mouse_press(self, mouse_pos: MousePos):
+    self._control_press = (rl.get_time(), mouse_pos.x, mouse_pos.y)
+
   def _handle_mouse_release(self, mouse_pos: MousePos):
-    # Don't trigger click callback if bookmark was triggered
-    if not self._bookmark_icon.interacting():
+    # The bookmark swipe has priority over HUD gestures.
+    if self._bookmark_icon.interacting():
+      self._control_press = None
+      return
+
+    start = self._control_press
+    self._control_press = None
+    if start is None or not ui_state.started:
       super()._handle_mouse_release(mouse_pos)
+      return
+
+    pressed_at, start_x, start_y = start
+    dx = mouse_pos.x - start_x
+    dy = mouse_pos.y - start_y
+    now = rl.get_time()
+
+    if now - pressed_at >= SCREENSHOT_LONG_TOUCH_SECONDS and dx * dx + dy * dy <= 30 ** 2:
+      self._request_screenshot()
+      return
+
+    # Hold for 0.6 seconds anywhere on the HUD to open fixed steer-ratio controls.
+    if now - pressed_at >= 0.6 and (dx * dx + dy * dy) <= 45 ** 2:
+      self._offset_controls_until = 0.0
+      self._steer_ratio_controls_until = now + 5.0
+      return
+
+    if abs(dx) > 30 or abs(dy) > 30:
+      super()._handle_mouse_release(mouse_pos)
+      return
+
+    if now < self._steer_ratio_controls_until:
+      third = self.rect.x + self.rect.width / 3
+      two_thirds = self.rect.x + self.rect.width * 2 / 3
+      if mouse_pos.x < third:
+        self._hud_renderer.adjust_steer_ratio("-")
+      elif mouse_pos.x > two_thirds:
+        self._hud_renderer.adjust_steer_ratio("+")
+      else:
+        self._hud_renderer.toggle_steer_ratio()
+      self._steer_ratio_controls_until = now + 5.0
+      return
+
+    if now < self._offset_controls_until:
+      midpoint = self.rect.x + self.rect.width / 2
+      step = -0.01 if mouse_pos.x < midpoint else 0.01
+      value = float(ui_state.params.get("CameraOffset", return_default=True))
+      value = round(max(-0.35, min(0.35, value + step)), 2)
+      ui_state.params.put("CameraOffset", value)
+      self._camera_offset_value = value
+      self._model_renderer._camera_offset = value
+      return
+
+    # A tap opens the camera-offset control bar.
+    self._steer_ratio_controls_until = 0.0
+    self._camera_offset_value = float(ui_state.params.get("CameraOffset", return_default=True))
+    self._offset_controls_until = now + 5.0
 
   def _render(self, _):
     # Draw text if not onroad
     if not ui_state.started:
+      self._content_rect = self.rect
       rl.draw_rectangle_rec(self.rect, rl.BLACK)
       self._offroad_label.render(self._rect)
+      self._draw_analog_clock_icon()
       return
 
     self._switch_stream_if_needed(ui_state.sm)
@@ -243,6 +318,8 @@ class AugmentedRoadView(CameraView):
     # Render the base camera view
     super()._render(self._content_rect)
 
+    self._draw_hud_backing(self._content_rect)
+
     # Draw all UI overlays
     self._model_renderer.render(self._content_rect)
 
@@ -253,7 +330,12 @@ class AugmentedRoadView(CameraView):
     should_draw_dmoji = (not self._hud_renderer.drawing_top_icons() and
                          (ui_state.status != UIStatus.DISENGAGED or ui_state.always_on_dm))
     self._driver_state_renderer.set_should_draw(should_draw_dmoji)
-    self._driver_state_renderer.set_position(self._rect.x + 16, self._rect.y + 10)
+    dm_size = self._driver_state_renderer.BASE_SIZE
+    dm_margin = 16
+    self._driver_state_renderer.set_position(
+      self._rect.x + self._rect.width - dm_size - dm_margin,
+      self._rect.y + self._rect.height - dm_size - dm_margin,
+    )
     self._driver_state_renderer.render()
     self._long_indicator.set_should_draw(not self._hud_renderer.drawing_top_icons())
     self._long_indicator.render(self._content_rect)
@@ -261,8 +343,17 @@ class AugmentedRoadView(CameraView):
     self._hud_renderer.set_can_draw_top_icons(alert_to_render is None)
     self._hud_renderer.set_wheel_critical_icon(alert_to_render is not None and not not_animating_out and
                                                alert_to_render.visual_alert == car.CarControl.HUDControl.VisualAlert.steerRequired)
-    self._alert_renderer.render(self._content_rect)
     self._hud_renderer.render(self._content_rect)
+    self._draw_analog_clock_icon()
+    self._draw_day_date()
+    self._draw_ai_label()
+    self._draw_fuel_gauge()
+    self._draw_brake_pressure_percent()
+    self._draw_gear_change_popup()
+    # Keep alert popups above the HUD text and background.
+    self._alert_renderer.render(self._content_rect)
+    self._draw_camera_and_steer_controls()
+    self._draw_screenshot_status()
 
     # Draw fake rounded border
     rl.draw_rectangle_rounded_lines_ex(self._content_rect, 0.2 * 1.02, 10, 50, rl.BLACK)
@@ -279,12 +370,330 @@ class AugmentedRoadView(CameraView):
 
     self._bookmark_icon.render(self.rect)
 
+  def _request_screenshot(self) -> None:
+    self._control_press = None
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    gui_app.request_screenshot(
+      Path("/data/media/0/screenshot") / f"openpilot_{timestamp}.png",
+      on_saved=lambda: self._set_screenshot_status("SAVED"),
+      on_failed=lambda: self._set_screenshot_status("SAVE FAILED"),
+    )
+
+  def _set_screenshot_status(self, status: str) -> None:
+    self._screenshot_status = status
+    self._screenshot_status_until = rl.get_time() + SCREENSHOT_STATUS_SECONDS
+
+  def _draw_screenshot_status(self) -> None:
+    if not self._screenshot_status or rl.get_time() >= self._screenshot_status_until:
+      return
+
+    font = gui_app.font(FontWeight.DISPLAY)
+    size = 40
+    text = self._screenshot_status
+    extent = rl.measure_text_ex(font, text, size, 0)
+    x = self.rect.x + (self.rect.width - extent.x) / 2
+    y = self.rect.y + self.rect.height * 0.15
+    padding_x, padding_y = 24, 14
+    rl.draw_rectangle_rec(
+      rl.Rectangle(x - padding_x, y - padding_y, extent.x + padding_x * 2, extent.y + padding_y * 2),
+      rl.Color(0, 0, 0, 220),
+    )
+    color = rl.GREEN if text == "SAVED" else rl.RED
+    rl.draw_text_ex(font, text, rl.Vector2(x, y), size, 0, color)
+
+  def _draw_hud_backing(self, rect: rl.Rectangle) -> None:
+    top_height = min(170, max(110, int(rect.height * 0.22)))
+    bottom_height = min(220, max(140, int(rect.height * 0.36)))
+    rl.draw_rectangle_rec(rl.Rectangle(rect.x, rect.y, rect.width, top_height), rl.BLACK)
+    rl.draw_rectangle_rec(
+      rl.Rectangle(rect.x, rect.y + rect.height - bottom_height, rect.width, bottom_height), rl.BLACK)
+
+
+  def _draw_analog_clock_icon(self) -> None:
+    rect = self._content_rect
+    clock_size = self._clock_icon_size
+    radius = clock_size * 0.40
+    hand_scale = 1.5
+    hand_reach = radius * 0.84 * hand_scale
+    if ui_state.started:
+      center_x = rect.x + hand_reach + 8
+    else:
+      center_x = rect.x + rect.width - hand_reach - 110
+    center_y = rect.y + rect.height - hand_reach
+
+    now = datetime.now(ZoneInfo("America/Los_Angeles"))
+    seconds = now.second + now.microsecond / 1_000_000
+    minutes = now.minute + seconds / 60
+    hours = (now.hour % 12) + minutes / 60
+    hands = (
+      (-90 + hours * 30, radius * 0.50 * hand_scale, 4.0 * hand_scale, rl.WHITE),
+      (-90 + minutes * 6, radius * 0.72 * hand_scale, 3.0 * hand_scale, rl.WHITE),
+      (-90 + seconds * 6, radius * 0.48 * hand_scale, 1.8 * hand_scale, rl.RED),
+    )
+    center = rl.Vector2(center_x, center_y)
+    for angle, length, thickness, color in hands:
+      end = rl.Vector2(center_x + math.cos(math.radians(angle)) * length,
+                       center_y + math.sin(math.radians(angle)) * length)
+      rl.draw_line_ex(center, end, thickness, color)
+
+  def _draw_day_date(self) -> None:
+    rect = self._content_rect
+    now = datetime.now(ZoneInfo("America/Los_Angeles"))
+    weekday = now.strftime("%a").upper()
+    day = now.strftime("%d").lstrip("0") or "0"
+
+    font = gui_app.font(FontWeight.DISPLAY)
+    center_x = rect.x + rect.width - 24 - min(105.0, rect.height * 0.21)
+    weekday_size = min(24.0, rect.height * 0.055)
+    day_size = min(88.0, rect.height * 0.19)
+    weekday_extent = rl.measure_text_ex(font, weekday, weekday_size, 0)
+    day_extent = rl.measure_text_ex(font, day, day_size, 0)
+
+    rl.draw_text_ex(font, weekday,
+                    rl.Vector2(center_x - weekday_extent.x / 2, rect.y + 22),
+                    weekday_size, 0, rl.Color(220, 228, 238, 255))
+    rl.draw_text_ex(font, day,
+                    rl.Vector2(center_x - day_extent.x / 2,
+                               rect.y + 24 + weekday_extent.y),
+                    day_size, 0, rl.WHITE)
+
+  def _draw_ai_label(self) -> None:
+    rect = self._content_rect
+    now = datetime.now(ZoneInfo("America/Los_Angeles"))
+    font = gui_app.font(FontWeight.DISPLAY)
+    text = "AI"
+    font_size = 36
+    text_extent = rl.measure_text_ex(font, text, font_size, 0)
+    radius = min(105.0, rect.height * 0.21)
+    center_x = rect.x + rect.width - 24 - radius
+    day = now.strftime("%d").lstrip("0") or "0"
+    day_size = min(88.0, rect.height * 0.19)
+    day_extent = rl.measure_text_ex(font, day, day_size, 0)
+    weekday = now.strftime("%a").upper()
+    weekday_size = min(24.0, rect.height * 0.055)
+    weekday_extent = rl.measure_text_ex(font, weekday, weekday_size, 0)
+
+    x = center_x + day_extent.x / 2 + 12
+    if x + text_extent.x > rect.x + rect.width - 8:
+      x = center_x - day_extent.x / 2 - 12 - text_extent.x
+    y = rect.y + 24 + weekday_extent.y + (day_extent.y - text_extent.y) / 2
+
+    car_state = ui_state.sm["carState"]
+    car_control = ui_state.sm["carControl"]
+    pedal_override = car_state.gasPressed or car_state.brakePressed or any(
+      event.name == log.OnroadEvent.EventName.gasPressedOverride
+      for event in ui_state.sm["onroadEvents"]
+    )
+    if pedal_override:
+      color = rl.GRAY
+    elif (self._hud_renderer.is_cruise_set and ui_state.has_longitudinal_control and
+          car_control.longActive):
+      color = rl.Color(0, 255, 80, 255)
+    elif car_control.latActive:
+      color = rl.Color(0, 170, 55, 255)
+    else:
+      color = rl.WHITE
+
+    rl.draw_text_ex(font, text, rl.Vector2(x + 2, y + 2), font_size, 0, rl.Color(0, 0, 0, 190))
+    rl.draw_text_ex(font, text, rl.Vector2(x, y), font_size, 0, color)
+
+  def _ai_brake_pressure(self) -> float:
+    car_control = ui_state.sm["carControl"]
+    if not ui_state.has_longitudinal_control or not car_control.longActive:
+      return 0.0
+
+    # The longitudinal controller expresses braking as negative acceleration.
+    return max(0.0, min(1.0, -float(car_control.actuators.accel) / 4.0))
+
+  @staticmethod
+  def _brake_pressure_color(brake_pressure: float) -> rl.Color:
+    color_stops = ((255, 205, 105), (255, 145, 0), (255, 45, 20), (255, 0, 35))
+    color_position = brake_pressure * (len(color_stops) - 1)
+    color_index = min(int(color_position), len(color_stops) - 2)
+    blend = color_position - color_index
+    start_color, end_color = color_stops[color_index:color_index + 2]
+    red, green, blue = (int(start + (end - start) * blend)
+                        for start, end in zip(start_color, end_color))
+    return rl.Color(red, green, blue, 255)
+
+  def _draw_brake_pressure_percent(self) -> None:
+    brake_pressure = self._ai_brake_pressure()
+    if brake_pressure <= 0.01:
+      return
+
+    rect = self._content_rect
+    percent_text = f"{round(brake_pressure * 100)}%"
+    font = gui_app.font(FontWeight.DISPLAY)
+    max_radius = min(32.0, rect.height * 0.08)
+    percent_font_size = max_radius * 1.8
+    percent_extent = rl.measure_text_ex(font, percent_text, percent_font_size, 0)
+    gauge_center_x = rect.x + rect.width / 2
+    gauge_y = rect.y + 32 + 25 + 24
+    percent_x = gauge_center_x - percent_extent.x / 2
+    percent_y = gauge_y + max_radius + 10 - percent_extent.y / 2
+    glow_alpha = int(35 + 160 * brake_pressure)
+    color = self._brake_pressure_color(brake_pressure)
+    glow = rl.Color(color.r, color.g, color.b, glow_alpha)
+    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+      rl.draw_text_ex(font, percent_text, rl.Vector2(percent_x + dx, percent_y + dy),
+                      percent_font_size, 0, glow)
+    rl.draw_text_ex(font, percent_text, rl.Vector2(percent_x, percent_y),
+                    percent_font_size, 0, color)
+
+  def _draw_fuel_gauge(self) -> None:
+    rect = self._content_rect
+    car_state = ui_state.sm["carState"]
+    fuel = float(car_state.fuelGauge)
+    if fuel > 1.0:
+      fuel /= 100.0
+    fuel = max(0.0, min(1.0, fuel))
+    gear = car_state.gearShifter
+    gear_shifter = car.CarState.GearShifter
+    active_gear = {
+      gear_shifter.park: "P",
+      gear_shifter.reverse: "R",
+      gear_shifter.neutral: "N",
+      gear_shifter.drive: "D",
+      gear_shifter.low: "L",
+    }.get(gear)
+    if active_gear is None:
+      gear_name = str(gear).lower().rsplit(".", 1)[-1]
+      active_gear = {"park": "P", "reverse": "R", "neutral": "N", "drive": "D", "low": "L"}.get(gear_name)
+    if active_gear is not None and active_gear != self._last_active_gear:
+      self._gear_popup_letter = active_gear
+      self._gear_popup_until = 0.0 if active_gear == "R" else rl.get_time() + 3.0
+    self._last_active_gear = active_gear
+
+    # Center PRNDL over an E-to-F dash gauge.
+    gear_step = 36.0
+    gear_width = gear_step * 5
+    gear_left = rect.x + (rect.width - gear_width) / 2
+    gear_center_y = rect.y + 32 + 25
+    gray = rl.Color(150, 155, 160, 255)
+
+    font = gui_app.font(FontWeight.DISPLAY)
+    for index, letter in enumerate("PRNDL"):
+      color = rl.Color(0, 255, 80, 255) if letter == active_gear else gray
+      extent = rl.measure_text_ex(font, letter, 34, 0)
+      x = gear_left + index * gear_step + (gear_step - extent.x) / 2
+      y = gear_center_y - extent.y / 2
+      rl.draw_text_ex(font, letter, rl.Vector2(x, y), 34, 0, color)
+
+    dash_count = 10
+    dash_width = 9.0
+    dash_gap = 4.0
+    dash_total_width = dash_count * dash_width + (dash_count - 1) * dash_gap
+    fuel_label_size = 14
+    zero_extent = rl.measure_text_ex(font, "0%", fuel_label_size, 0)
+    full_extent = rl.measure_text_ex(font, "100%", fuel_label_size, 0)
+    gauge_width = zero_extent.x + 7 + dash_total_width + 7 + full_extent.x
+    gauge_left = rect.x + (rect.width - gauge_width) / 2
+    gauge_y = gear_center_y + 24
+    rl.draw_text_ex(font, "0%", rl.Vector2(gauge_left, gauge_y - zero_extent.y / 2),
+                    fuel_label_size, 0, gray)
+    dash_left = gauge_left + zero_extent.x + 7
+    filled_dashes = math.ceil(fuel * dash_count) if fuel > 0.0 else 0
+    brake_pressure = self._ai_brake_pressure()
+    braking = brake_pressure > 0.01
+    if braking:
+      filled_dashes = max(1, round(brake_pressure * dash_count))
+      fill_color = self._brake_pressure_color(brake_pressure)
+    else:
+      fill_color = rl.Color(0, 255, 80, 255)
+    for index in range(dash_count):
+      color = fill_color if index < filled_dashes else gray
+      rl.draw_rectangle_rec(rl.Rectangle(dash_left + index * (dash_width + dash_gap),
+                                           gauge_y - 2, dash_width, 4), color)
+    full_x = dash_left + dash_total_width + 7
+    rl.draw_text_ex(font, "100%", rl.Vector2(full_x, gauge_y - full_extent.y / 2),
+                    fuel_label_size, 0, gray)
+
+  def _draw_gear_change_popup(self) -> None:
+    if (self._gear_popup_letter is None or
+        (self._gear_popup_letter != "R" and rl.get_time() >= self._gear_popup_until)):
+      return
+
+    rect = self._content_rect
+    size = min(190.0, rect.height * 0.62)
+    center_x = rect.x + rect.width / 2
+    center_y = rect.y + rect.height * 0.60
+    box = rl.Rectangle(center_x - size / 2, center_y - size / 2, size, size)
+    green = rl.Color(0, 255, 80, 255)
+    for padding, thickness, alpha in ((9.0, 12.0, 30), (5.0, 7.0, 80)):
+      glow = rl.Rectangle(box.x - padding, box.y - padding,
+                          box.width + padding * 2, box.height + padding * 2)
+      rl.draw_rectangle_rounded_lines_ex(
+        glow, 0.18, 10, thickness, rl.Color(0, 255, 80, alpha))
+    rl.draw_rectangle_rounded(box, 0.18, 10, rl.Color(0, 0, 0, 235))
+    rl.draw_rectangle_rounded_lines_ex(box, 0.18, 10, 6.0, green)
+
+    font = gui_app.font(FontWeight.DISPLAY)
+    font_size = size * 0.68
+    extent = rl.measure_text_ex(font, self._gear_popup_letter, font_size, 0)
+    rl.draw_text_ex(font, self._gear_popup_letter,
+                    rl.Vector2(box.x + (box.width - extent.x) / 2,
+                               box.y + (box.height - extent.y) / 2),
+                    font_size, 0, rl.WHITE)
+
+  def _draw_camera_and_steer_controls(self) -> None:
+    now = rl.get_time()
+    if now >= self._offset_controls_until:
+      self._offset_controls_until = 0.0
+    if now >= self._steer_ratio_controls_until:
+      self._steer_ratio_controls_until = 0.0
+    if not self._offset_controls_until and not self._steer_ratio_controls_until:
+      return
+
+    # Use the complete HUD rectangle so the black bar reaches both HUD edges.
+    rect = self.rect
+    height = min(rect.height * 0.80, max(160.0, rect.height * 0.40))
+    top = rect.y + (rect.height - height) / 2
+    rl.draw_rectangle_rec(rl.Rectangle(rect.x, top, rect.width, height), rl.BLACK)
+
+    font = gui_app.font(FontWeight.DISPLAY)
+    ratio_mode = self._steer_ratio_controls_until > now
+    if ratio_mode:
+      value = f"{self._hud_renderer.steer_ratio_value():.1f}"
+      ratio_state = "ON" if self._hud_renderer.steer_ratio_enabled() else "OFF"
+      status = f"FIXED STEER RATIO {ratio_state}"
+      symbol_color = (rl.Color(0, 220, 80, 255) if
+                      self._hud_renderer.steer_ratio_adjustment_allowed() else
+                      rl.Color(120, 125, 125, 255))
+    else:
+      value = f"{self._camera_offset_value:+.2f}"
+      status = "CAMERA OFFSET"
+      symbol_color = rl.Color(0, 220, 80, 255)
+
+    value_size = 82
+    measured = rl.measure_text_ex(font, value, value_size, 0)
+    rl.draw_text_ex(font, value,
+                    rl.Vector2(rect.x + (rect.width - measured.x) / 2,
+                               top + height * (0.24 if status else 0.34)),
+                    value_size, 0, rl.WHITE)
+
+    symbol_size = 68
+    for symbol, x in (("-", rect.x + rect.width * 0.16),
+                      ("+", rect.x + rect.width * 0.84)):
+      symbol_measured = rl.measure_text_ex(font, symbol, symbol_size, 0)
+      rl.draw_text_ex(font, symbol,
+                      rl.Vector2(x - symbol_measured.x / 2,
+                                 top + (height - symbol_measured.y) / 2),
+                      symbol_size, 0, symbol_color)
+
+    if status:
+      status_size = 22
+      status_measured = rl.measure_text_ex(font, status, status_size, 0)
+      rl.draw_text_ex(font, status,
+                      rl.Vector2(rect.x + (rect.width - status_measured.x) / 2,
+                                 top + height * 0.72),
+                      status_size, 0, rl.WHITE)
+
   def close(self):
     self._navigation.close()
     super().close()
 
   def _switch_stream_if_needed(self, sm):
-    if sm['selfdriveState'].experimentalMode and sm['carParams'].openpilotLongitudinalControl and WIDE_CAM in self.available_streams:
+    if sm['carParams'].openpilotLongitudinalControl and WIDE_CAM in self.available_streams:
       v_ego = sm['carState'].vEgo
       if v_ego < WIDE_CAM_MAX_SPEED:
         target = WIDE_CAM
