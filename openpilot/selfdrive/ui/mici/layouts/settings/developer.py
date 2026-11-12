@@ -90,6 +90,10 @@ class DeveloperLayoutMici(NavScroller):
     self._debug_mode_toggle = BigParamControl("ui debug mode", "ShowDebugInfo",
                                               toggle_callback=lambda checked: (gui_app.set_show_touches(checked), gui_app.set_show_fps(checked)),
                                               description="Show touch locations and the UI frame rate.")
+    self._planted_steering_toggle = BigParamControl("planted steering", "PlantedSteering",
+                                                    description="Firmer, less floaty steering: stronger curve feedforward, " +
+                                                                "tighter lane hold, and damping against weave. Applies " +
+                                                                "within about a second.")
     self._lane_centering_toggle = BigParamControl("SPLC (StarPilot Lane Centering)", "LaneCentering",
                                                   toggle_callback=self._update_lane_centering_settings_enabled,
                                                   description="Experimentally bias the model command toward the detected lane center. Requires two " +
@@ -121,6 +125,7 @@ class DeveloperLayoutMici(NavScroller):
       self._alpha_long_toggle,
       self._debug_mode_toggle,
       self._navigation_toggle,
+      self._planted_steering_toggle,
       self._lane_centering_toggle,
       self._lane_centering_pause_toggle,
       self._lane_center_offset_toggle,
@@ -138,6 +143,7 @@ class DeveloperLayoutMici(NavScroller):
       ("ShowDebugInfo", self._debug_mode_toggle),
       ("NavigationEnabled", self._navigation_toggle),
       ("LaneCentering", self._lane_centering_toggle),
+      ("PlantedSteering", self._planted_steering_toggle),
     )
     onroad_blocked_toggles = (self._adb_toggle, self._joystick_toggle)
     release_blocked_toggles = (self._joystick_toggle, self._long_maneuver_toggle, self._lat_maneuver_toggle, self._alpha_long_toggle, self._navigation_toggle)
