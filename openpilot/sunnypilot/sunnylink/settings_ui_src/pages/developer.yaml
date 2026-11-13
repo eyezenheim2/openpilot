@@ -142,6 +142,15 @@ sections:
       key: DisableUpdates
       equals: true
     - $ref: '#/macros/advanced_only'
+- id: planted_steering
+  title: Planted Steering
+  description: Firmer, less floaty steering for cars that use PID lateral control.
+  items:
+  - key: PlantedSteering
+    widget: toggle
+    title: Planted Steering
+    description: Firmer, less floaty steering. Stronger curve feedforward, tighter lane hold, and damping against weave.
+      Applies within about a second.
 - id: lane_centering
   title: StarPilot Lane Centering (SPLC)
   description: Experimental confidence-gated lane centering ported from StarPilot. Biases the model command toward the detected
