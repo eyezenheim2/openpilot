@@ -184,6 +184,9 @@ procs += [
   NativeProcess("mapd", Paths.mapd_root(), ["bash", "-c", f"{MAPD_PATH} > /dev/null 2>&1"], mapd_ready),
   PythonProcess("mapd_manager", "openpilot.sunnypilot.mapd.mapd_manager", always_run),
 
+  # Automatic local time zone (looked up once internet is available)
+  PythonProcess("timezoned", "openpilot.sunnypilot.system.timezoned", always_run, enabled=not PC),
+
   # locationd
   NativeProcess("locationd_llk", "openpilot/sunnypilot/selfdrive/locationd", ["./locationd"], only_onroad),
 ]

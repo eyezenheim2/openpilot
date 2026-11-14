@@ -387,6 +387,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"BackupManager_CreateBackup", {PERSISTENT, BOOL}},
     {"BackupManager_RestoreVersion", {PERSISTENT, STRING}},
 
+    // Automatic time zone (set by timezoned)
+    {"Timezone", {PERSISTENT, STRING}},
+
     // sunnypilot car specific params
     {"HondaEnforceStockLongitudinal", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"HyundaiLongitudinalTuning", {PERSISTENT | BACKUP, INT, "0"}},
