@@ -46,6 +46,9 @@ WIDE_CAM_MAX_SPEED = 5.0  # m/s (11 mph)
 ROAD_CAM_MIN_SPEED = 10.0  # m/s (22 mph)
 SCREENSHOT_LONG_TOUCH_SECONDS = 5
 SCREENSHOT_STATUS_SECONDS = 3.0
+HUD_CONTROLS_SECONDS = 5.0
+PLANTED_SWIPE_MIN_DY = 60  # px of downward travel to open the planted steering toggle
+PLANTED_STEERING_PARAM = "PlantedSteering"
 
 CAM_Y_OFFSET = 20
 
@@ -180,6 +183,7 @@ class AugmentedRoadView(CameraView):
     self._control_press: tuple[float, float, float] | None = None
     self._offset_controls_until = 0.0
     self._steer_ratio_controls_until = 0.0
+    self._planted_controls_until = 0.0
     self._camera_offset_value = float(ui_state.params.get("CameraOffset", return_default=True))
     self._screenshot_status = ""
     self._screenshot_status_until = 0.0
@@ -250,8 +254,21 @@ class AugmentedRoadView(CameraView):
       self._steer_ratio_controls_until = now + 5.0
       return
 
+    # Swipe down to open the planted steering toggle; it closes on its own after a few seconds.
+    if dy >= PLANTED_SWIPE_MIN_DY and abs(dx) < dy:
+      self._offset_controls_until = 0.0
+      self._steer_ratio_controls_until = 0.0
+      self._planted_controls_until = now + HUD_CONTROLS_SECONDS
+      return
+
     if abs(dx) > 30 or abs(dy) > 30:
       super()._handle_mouse_release(mouse_pos)
+      return
+
+    if now < self._planted_controls_until:
+      planted = not ui_state.params.get_bool(PLANTED_STEERING_PARAM)
+      ui_state.params.put_bool(PLANTED_STEERING_PARAM, planted)
+      self._planted_controls_until = now + HUD_CONTROLS_SECONDS
       return
 
     if now < self._steer_ratio_controls_until:
@@ -278,6 +295,7 @@ class AugmentedRoadView(CameraView):
 
     # A tap opens the camera-offset control bar.
     self._steer_ratio_controls_until = 0.0
+    self._planted_controls_until = 0.0
     self._camera_offset_value = float(ui_state.params.get("CameraOffset", return_default=True))
     self._offset_controls_until = now + 5.0
 
@@ -641,7 +659,9 @@ class AugmentedRoadView(CameraView):
       self._offset_controls_until = 0.0
     if now >= self._steer_ratio_controls_until:
       self._steer_ratio_controls_until = 0.0
-    if not self._offset_controls_until and not self._steer_ratio_controls_until:
+    if now >= self._planted_controls_until:
+      self._planted_controls_until = 0.0
+    if not self._offset_controls_until and not self._steer_ratio_controls_until and not self._planted_controls_until:
       return
 
     # Use the complete HUD rectangle so the black bar reaches both HUD edges.
@@ -651,6 +671,10 @@ class AugmentedRoadView(CameraView):
     rl.draw_rectangle_rec(rl.Rectangle(rect.x, top, rect.width, height), rl.BLACK)
 
     font = gui_app.font(FontWeight.DISPLAY)
+    if self._planted_controls_until > now:
+      self._draw_planted_steering_control(rect, top, height, font)
+      return
+
     ratio_mode = self._steer_ratio_controls_until > now
     if ratio_mode:
       value = f"{self._hud_renderer.steer_ratio_value():.1f}"
@@ -687,6 +711,23 @@ class AugmentedRoadView(CameraView):
                       rl.Vector2(rect.x + (rect.width - status_measured.x) / 2,
                                  top + height * 0.72),
                       status_size, 0, rl.WHITE)
+
+  def _draw_planted_steering_control(self, rect: rl.Rectangle, top: float, height: float, font) -> None:
+    planted = ui_state.params.get_bool(PLANTED_STEERING_PARAM)
+    value = "ON" if planted else "OFF"
+    value_color = rl.Color(0, 220, 80, 255) if planted else rl.Color(120, 125, 125, 255)
+    value_size = 82
+    measured = rl.measure_text_ex(font, value, value_size, 0)
+    rl.draw_text_ex(font, value,
+                    rl.Vector2(rect.x + (rect.width - measured.x) / 2, top + height * 0.24),
+                    value_size, 0, value_color)
+
+    status = "PLANTED STEERING  -  TAP TO TOGGLE"
+    status_size = 22
+    status_measured = rl.measure_text_ex(font, status, status_size, 0)
+    rl.draw_text_ex(font, status,
+                    rl.Vector2(rect.x + (rect.width - status_measured.x) / 2, top + height * 0.72),
+                    status_size, 0, rl.WHITE)
 
   def close(self):
     self._navigation.close()
