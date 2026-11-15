@@ -8,18 +8,25 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.common.pid import PIDController
 
 # "Planted steering": a firmer variant of the car's stock PID tune, applied on top of whatever the
-# car port sets so it works for every PID car. Each term targets one "floaty" symptom:
-#   feedforward up   -> less lazy in curves (stops running wide, then catching up)
-#   integral up      -> holds the lane center instead of slowly drifting off it
-#   proportional up  -> corrects small errors sooner
-#   damping (D) term -> resists steering-wheel motion that the plan didn't ask for, so the
-#                       extra stiffness settles instead of weaving (ping-pong)
+# car port sets so it works for every PID car. Each piece targets one "floaty" symptom:
+#   integral up        -> holds the lane center instead of slowly drifting off it
+#   proportional up    -> corrects small errors sooner
+#   feedforward down   -> settles into curves instead of turning in too hard and being pulled back
+#                         (logs showed stock*1.3 feedforward was ~2.3-2.5x the torque curves needed,
+#                         with the integrator constantly fighting it)
+#   desired smoothing  -> the wheel stops chasing the model's small ~1 Hz twitches, so it holds
+#                         its line on straights
+#   damping (D) term   -> resists steering-wheel motion the plan didn't ask for (crosswind, ruts,
+#                         road crown). The wheel rate it uses is filtered: the raw rate signal is
+#                         coarse (whole deg/s), and an unfiltered D turned that into torque flutter
 PLANTED_STEERING_PARAM = "PlantedSteering"
 PLANTED_KP_SCALE = 1.2
 PLANTED_KI_SCALE = 1.5
-PLANTED_KF_SCALE = 1.3
-PLANTED_KD_SECONDS = 0.0  # damping gain as a time constant: kd = kp * this (was 0.08; 0 = no damping, testing planted feel)
+PLANTED_KF_SCALE = 0.6  # was 1.3
+PLANTED_KD_SECONDS = 0.05  # damping gain as a time constant: kd = kp * this. 0 = no damping
+PLANTED_DESIRED_FILTER_RC = 0.15  # s, low-pass on the desired steering angle. 0 = off
 PLANTED_RATE_FILTER_RC = 0.1  # s, smooths the desired-angle rate used by the damping term
+PLANTED_WHEEL_RATE_FILTER_RC = 0.15  # s, smooths the measured wheel rate used by the damping term
 PARAM_POLL_INTERVAL = 1.0  # s
 
 
@@ -42,9 +49,17 @@ class LatControlPID(LatControl):
     self._params = Params()
     self._param_poll_time = 0.0
     self.planted: bool | None = None
+    self._desired_angle = FirstOrderFilter(0.0, PLANTED_DESIRED_FILTER_RC, dt, initialized=False)
     self._desired_rate = FirstOrderFilter(0.0, PLANTED_RATE_FILTER_RC, dt)
+    self._wheel_rate = FirstOrderFilter(0.0, PLANTED_WHEEL_RATE_FILTER_RC, dt, initialized=False)
     self._last_angle_des: float | None = None
     self._update_planted()
+
+  def _reset_planted_filters(self):
+    self._desired_angle.initialized = False
+    self._wheel_rate.initialized = False
+    self._desired_rate.x = 0.0
+    self._last_angle_des = None
 
   def _update_planted(self):
     now = time.monotonic()
@@ -56,6 +71,7 @@ class LatControlPID(LatControl):
     if planted == self.planted:
       return
     self.planted = planted
+    self._reset_planted_filters()
 
     if planted:
       kp = _scale_gain(self._stock_kp, PLANTED_KP_SCALE)
@@ -76,17 +92,25 @@ class LatControlPID(LatControl):
     pid_log.steeringAngleDeg = float(CS.steeringAngleDeg)
     pid_log.steeringRateDeg = float(CS.steeringRateDeg)
 
-    angle_steers_des_no_offset = math.degrees(VM.get_steer_from_curvature(-desired_curvature, CS.vEgo, params.roll))
+    # The angle the plan asks for, before any smoothing. Logged as steeringAngleDesiredDeg so logs
+    # still show the raw request; angleError is measured against the (smoothed) target actually tracked.
+    angle_request_no_offset = math.degrees(VM.get_steer_from_curvature(-desired_curvature, CS.vEgo, params.roll))
+    pid_log.steeringAngleDesiredDeg = angle_request_no_offset + params.angleOffsetDeg
+
+    if not active:
+      self._reset_planted_filters()
+
+    if self.planted and active and PLANTED_DESIRED_FILTER_RC > 0.:
+      angle_steers_des_no_offset = self._desired_angle.update(angle_request_no_offset)
+    else:
+      angle_steers_des_no_offset = angle_request_no_offset
     angle_steers_des = angle_steers_des_no_offset + params.angleOffsetDeg
     error = angle_steers_des - CS.steeringAngleDeg
-
-    pid_log.steeringAngleDesiredDeg = angle_steers_des
     pid_log.angleError = error
+
     if not active:
       output_torque = 0.0
       pid_log.active = False
-      self._last_angle_des = None
-      self._desired_rate.x = 0.0
 
     else:
       # Rate of the steering error, for the damping term: (desired rate) - (actual wheel rate).
@@ -95,7 +119,7 @@ class LatControlPID(LatControl):
       else:
         self._desired_rate.update((angle_steers_des - self._last_angle_des) / self.dt)
       self._last_angle_des = angle_steers_des
-      error_rate = self._desired_rate.x - CS.steeringRateDeg
+      error_rate = self._desired_rate.x - self._wheel_rate.update(CS.steeringRateDeg)
 
       # offset does not contribute to resistive torque
       ff = self.ff_factor * self.get_steer_feedforward(angle_steers_des_no_offset, CS.vEgo)
