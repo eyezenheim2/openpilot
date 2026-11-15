@@ -18,7 +18,7 @@ PLANTED_STEERING_PARAM = "PlantedSteering"
 PLANTED_KP_SCALE = 1.2
 PLANTED_KI_SCALE = 1.5
 PLANTED_KF_SCALE = 1.3
-PLANTED_KD_SECONDS = 0.08  # damping gain as a time constant: kd = kp * this
+PLANTED_KD_SECONDS = 0.0  # damping gain as a time constant: kd = kp * this (was 0.08; 0 = no damping, testing planted feel)
 PLANTED_RATE_FILTER_RC = 0.1  # s, smooths the desired-angle rate used by the damping term
 PARAM_POLL_INTERVAL = 1.0  # s
 
