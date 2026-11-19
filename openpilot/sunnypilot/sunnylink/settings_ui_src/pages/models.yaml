@@ -99,6 +99,16 @@ sections:
   - key: FixedSteerRatioEnabled
     widget: toggle
     title: Fixed Steer Ratio
-    description: Lock steering to a fixed steer ratio instead of the live-learned one. Uses the ratio set from the onroad HUD, or the car's stock ratio if none is set.
+    description: Lock steering to a fixed steer ratio instead of the live-learned one. Uses the ratio below, or the car's stock ratio if none is set.
     enablement:
     - $ref: '#/macros/not_engaged'
+  - key: FixedSteerRatio
+    widget: option
+    title: Adjust Fixed Steer Ratio
+    description: Steer ratio used when Fixed Steer Ratio is on. Clamped on device to within ±25% of the car's stock ratio (max 23.33).
+    min: 5.0
+    max: 23.33
+    step: 0.1
+    enablement:
+    - $ref: '#/macros/not_engaged'
+    - {type: param, key: FixedSteerRatioEnabled, equals: true}

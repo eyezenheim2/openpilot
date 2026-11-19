@@ -202,13 +202,14 @@ class HudRenderer(Widget):
     if not self.steer_ratio_adjustment_allowed():
       return
     if self._steer_ratio_enabled:
-      ui_state.params.put(FIXED_STEER_RATIO_PARAM, "")
+      # Keep the stored ratio so it's remembered (and editable from sunnylink)
       ui_state.params.put_bool(FIXED_STEER_RATIO_ENABLED_PARAM, False)
       self._steer_ratio_enabled = False
       self._fixed_steer_ratio = self._stock_steer_ratio
     else:
-      self._fixed_steer_ratio = self._stock_steer_ratio
-      ui_state.params.put(FIXED_STEER_RATIO_PARAM, f"{self._fixed_steer_ratio:.1f}")
+      stored = ui_state.params.get(FIXED_STEER_RATIO_PARAM)
+      self._fixed_steer_ratio = self._clamp_steer_ratio(round(float(stored), 1)) if stored else self._stock_steer_ratio
+      ui_state.params.put(FIXED_STEER_RATIO_PARAM, float(self._fixed_steer_ratio))
       ui_state.params.put_bool(FIXED_STEER_RATIO_ENABLED_PARAM, True)
       self._steer_ratio_enabled = True
 
@@ -218,7 +219,7 @@ class HudRenderer(Widget):
     delta = STEER_RATIO_STEP if direction == "+" else -STEER_RATIO_STEP
     self._fixed_steer_ratio = self._clamp_steer_ratio(
       round(self._fixed_steer_ratio + delta, 1))
-    ui_state.params.put(FIXED_STEER_RATIO_PARAM, f"{self._fixed_steer_ratio:.1f}")
+    ui_state.params.put(FIXED_STEER_RATIO_PARAM, float(self._fixed_steer_ratio))
 
   def set_wheel_critical_icon(self, critical: bool):
     """Set the wheel icon to critical or normal state."""

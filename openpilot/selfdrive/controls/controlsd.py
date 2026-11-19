@@ -117,8 +117,9 @@ class Controls(ControlsExt):
           fixed_ratio = stock_ratio
       min_ratio = min(stock_ratio * STEER_RATIO_MIN_FACTOR, STEER_RATIO_ABSOLUTE_MAX)
       max_ratio = max(min_ratio, min(stock_ratio * STEER_RATIO_MAX_FACTOR, STEER_RATIO_ABSOLUTE_MAX))
-      self._fixed_steer_ratio = (fixed_ratio if fixed_ratio is not None and
-                                 math.isfinite(fixed_ratio) and min_ratio <= fixed_ratio <= max_ratio else None)
+      # Clamp to the safe window around the stock ratio (sunnylink allows a wider range)
+      self._fixed_steer_ratio = (max(min_ratio, min(fixed_ratio, max_ratio))
+                                 if fixed_ratio is not None and math.isfinite(fixed_ratio) else None)
 
       if self._fixed_steer_ratio != self._fixed_steer_ratio_logged:
         if self._fixed_steer_ratio is None:
