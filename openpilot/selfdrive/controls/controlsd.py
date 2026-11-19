@@ -31,6 +31,7 @@ LaneChangeDirection = log.LaneChangeDirection
 
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 FIXED_STEER_RATIO_PARAM = "FixedSteerRatio"
+FIXED_STEER_RATIO_ENABLED_PARAM = "FixedSteerRatioEnabled"
 STEER_RATIO_MIN_FACTOR = 0.75
 STEER_RATIO_MAX_FACTOR = 1.25
 STEER_RATIO_ABSOLUTE_MAX = 23.33
@@ -100,12 +101,20 @@ class Controls(ControlsExt):
     if now >= self._fixed_steer_ratio_poll_time:
       self._fixed_steer_ratio_poll_time = now + FIXED_STEER_RATIO_POLL_INTERVAL
       value = self.params.get(FIXED_STEER_RATIO_PARAM)
+      enabled = self.params.get(FIXED_STEER_RATIO_ENABLED_PARAM)
       try:
         fixed_ratio = float(value) if value not in (None, "") else None
       except (TypeError, ValueError):
         fixed_ratio = None
 
       stock_ratio = max(float(self.CP.steerRatio), 0.1)
+      # No enable flag written yet (legacy): a stored ratio alone means enabled
+      if enabled is not None:
+        if not enabled:
+          fixed_ratio = None
+        elif fixed_ratio is None:
+          # Enabled (e.g. from sunnylink) with no stored ratio: hold the stock ratio
+          fixed_ratio = stock_ratio
       min_ratio = min(stock_ratio * STEER_RATIO_MIN_FACTOR, STEER_RATIO_ABSOLUTE_MAX)
       max_ratio = max(min_ratio, min(stock_ratio * STEER_RATIO_MAX_FACTOR, STEER_RATIO_ABSOLUTE_MAX))
       self._fixed_steer_ratio = (fixed_ratio if fixed_ratio is not None and

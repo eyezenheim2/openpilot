@@ -1,4 +1,5 @@
 import math
+import time
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
@@ -20,6 +21,8 @@ CRUISE_DISABLED_CHAR = '–'
 
 SET_SPEED_PERSISTENCE = 2.5  # seconds
 FIXED_STEER_RATIO_PARAM = "FixedSteerRatio"
+FIXED_STEER_RATIO_ENABLED_PARAM = "FixedSteerRatioEnabled"
+FIXED_STEER_RATIO_REFRESH_INTERVAL = 0.5
 STEER_RATIO_STEP = 0.1
 STEER_RATIO_ABSOLUTE_MAX = 23.33
 STEER_RATIO_MIN_FACTOR = 0.75
@@ -151,13 +154,22 @@ class HudRenderer(Widget):
     self._stock_steer_ratio = stock_ratio if stock_ratio > 0 else 15.0
     self._fixed_steer_ratio = self._stock_steer_ratio
     self._steer_ratio_enabled = False
+    self._fixed_steer_ratio_read_time = 0.0
     self._read_fixed_steer_ratio()
 
   def steer_ratio_value(self) -> float:
+    self._refresh_fixed_steer_ratio()
     return self._fixed_steer_ratio
 
   def steer_ratio_enabled(self) -> bool:
+    self._refresh_fixed_steer_ratio()
     return self._steer_ratio_enabled
+
+  def _refresh_fixed_steer_ratio(self) -> None:
+    # Pick up changes made elsewhere (e.g. the sunnylink toggle)
+    now = time.monotonic()
+    if now - self._fixed_steer_ratio_read_time >= FIXED_STEER_RATIO_REFRESH_INTERVAL:
+      self._read_fixed_steer_ratio()
 
   def steer_ratio_adjustment_allowed(self) -> bool:
     sm = ui_state.sm
@@ -166,14 +178,19 @@ class HudRenderer(Widget):
             not sm["carControl"].enabled)
 
   def _read_fixed_steer_ratio(self) -> None:
+    self._fixed_steer_ratio_read_time = time.monotonic()
     value = ui_state.params.get(FIXED_STEER_RATIO_PARAM)
-    if not value:
-      return
-    try:
-      self._fixed_steer_ratio = self._clamp_steer_ratio(float(value))
-      self._steer_ratio_enabled = True
-    except (TypeError, ValueError):
-      pass
+    enabled = ui_state.params.get(FIXED_STEER_RATIO_ENABLED_PARAM)
+    if enabled is None:
+      enabled = bool(value)  # legacy: stored ratio means enabled
+    ratio = self._stock_steer_ratio
+    if value:
+      try:
+        ratio = self._clamp_steer_ratio(float(value))
+      except (TypeError, ValueError):
+        pass
+    self._steer_ratio_enabled = bool(enabled)
+    self._fixed_steer_ratio = ratio if self._steer_ratio_enabled else self._stock_steer_ratio
 
   def _clamp_steer_ratio(self, ratio: float) -> float:
     low = min(self._stock_steer_ratio * STEER_RATIO_MIN_FACTOR, STEER_RATIO_ABSOLUTE_MAX)
@@ -186,11 +203,13 @@ class HudRenderer(Widget):
       return
     if self._steer_ratio_enabled:
       ui_state.params.put(FIXED_STEER_RATIO_PARAM, "")
+      ui_state.params.put_bool(FIXED_STEER_RATIO_ENABLED_PARAM, False)
       self._steer_ratio_enabled = False
       self._fixed_steer_ratio = self._stock_steer_ratio
     else:
       self._fixed_steer_ratio = self._stock_steer_ratio
       ui_state.params.put(FIXED_STEER_RATIO_PARAM, f"{self._fixed_steer_ratio:.1f}")
+      ui_state.params.put_bool(FIXED_STEER_RATIO_ENABLED_PARAM, True)
       self._steer_ratio_enabled = True
 
   def adjust_steer_ratio(self, direction: str) -> None:
