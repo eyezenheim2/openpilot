@@ -106,7 +106,7 @@ sections:
     widget: option
     title: Adjust Fixed Steer Ratio
     description: Steer ratio used when Fixed Steer Ratio is on. Clamped on device to within ±25% of the learned ratio it started from (max 23.33).
-    min: 5.0
+    min: 11.5  # 75% of the average stock steerRatio across opendbc platforms (15.34)
     max: 23.33
     step: 0.1
     enablement:
