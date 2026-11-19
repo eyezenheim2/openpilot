@@ -22,6 +22,7 @@ CRUISE_DISABLED_CHAR = '–'
 SET_SPEED_PERSISTENCE = 2.5  # seconds
 FIXED_STEER_RATIO_PARAM = "FixedSteerRatio"
 FIXED_STEER_RATIO_ENABLED_PARAM = "FixedSteerRatioEnabled"
+FIXED_STEER_RATIO_BASE_PARAM = "FixedSteerRatioBase"
 FIXED_STEER_RATIO_REFRESH_INTERVAL = 0.5
 STEER_RATIO_STEP = 0.1
 STEER_RATIO_ABSOLUTE_MAX = 23.33
@@ -153,6 +154,7 @@ class HudRenderer(Widget):
       stock_ratio = 15.0
     self._stock_steer_ratio = stock_ratio if stock_ratio > 0 else 15.0
     self._fixed_steer_ratio = self._stock_steer_ratio
+    self._steer_ratio_base = self._stock_steer_ratio
     self._steer_ratio_enabled = False
     self._fixed_steer_ratio_read_time = 0.0
     self._read_fixed_steer_ratio()
@@ -181,9 +183,11 @@ class HudRenderer(Widget):
     self._fixed_steer_ratio_read_time = time.monotonic()
     value = ui_state.params.get(FIXED_STEER_RATIO_PARAM)
     enabled = ui_state.params.get(FIXED_STEER_RATIO_ENABLED_PARAM)
+    base = ui_state.params.get(FIXED_STEER_RATIO_BASE_PARAM)
     if enabled is None:
       enabled = bool(value)  # legacy: stored ratio means enabled
-    ratio = self._stock_steer_ratio
+    self._steer_ratio_base = base if base and base > 0 else self._stock_steer_ratio
+    ratio = self._steer_ratio_base
     if value:
       try:
         ratio = self._clamp_steer_ratio(float(value))
@@ -193,8 +197,8 @@ class HudRenderer(Widget):
     self._fixed_steer_ratio = ratio if self._steer_ratio_enabled else self._stock_steer_ratio
 
   def _clamp_steer_ratio(self, ratio: float) -> float:
-    low = min(self._stock_steer_ratio * STEER_RATIO_MIN_FACTOR, STEER_RATIO_ABSOLUTE_MAX)
-    high = max(low, min(self._stock_steer_ratio * STEER_RATIO_MAX_FACTOR,
+    low = min(self._steer_ratio_base * STEER_RATIO_MIN_FACTOR, STEER_RATIO_ABSOLUTE_MAX)
+    high = max(low, min(self._steer_ratio_base * STEER_RATIO_MAX_FACTOR,
                         STEER_RATIO_ABSOLUTE_MAX))
     return max(low, min(ratio, high))
 
@@ -202,14 +206,22 @@ class HudRenderer(Widget):
     if not self.steer_ratio_adjustment_allowed():
       return
     if self._steer_ratio_enabled:
-      # Keep the stored ratio so it's remembered (and editable from sunnylink)
       ui_state.params.put_bool(FIXED_STEER_RATIO_ENABLED_PARAM, False)
+      ui_state.params.remove(FIXED_STEER_RATIO_BASE_PARAM)
       self._steer_ratio_enabled = False
       self._fixed_steer_ratio = self._stock_steer_ratio
     else:
-      stored = ui_state.params.get(FIXED_STEER_RATIO_PARAM)
-      self._fixed_steer_ratio = self._clamp_steer_ratio(round(float(stored), 1)) if stored else self._stock_steer_ratio
-      ui_state.params.put(FIXED_STEER_RATIO_PARAM, float(self._fixed_steer_ratio))
+      # Seed from the learned ratio; it also becomes the base for the ±25% window
+      sm = ui_state.sm
+      learned = float(sm["vehicleParameters"].steerRatio) if sm.valid["vehicleParameters"] else 0.0
+      if learned > 0:
+        self._steer_ratio_base = round(learned, 1)
+        self._fixed_steer_ratio = self._steer_ratio_base
+        ui_state.params.put(FIXED_STEER_RATIO_BASE_PARAM, float(self._steer_ratio_base))
+        ui_state.params.put(FIXED_STEER_RATIO_PARAM, float(self._fixed_steer_ratio))
+      else:
+        # No learned ratio yet: controlsd seeds it once one is available
+        ui_state.params.remove(FIXED_STEER_RATIO_BASE_PARAM)
       ui_state.params.put_bool(FIXED_STEER_RATIO_ENABLED_PARAM, True)
       self._steer_ratio_enabled = True
 

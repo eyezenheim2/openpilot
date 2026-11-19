@@ -458,5 +458,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"TorqueParamsOverrideLatAccelFactor", {PERSISTENT | BACKUP, FLOAT, "2.5"}},
     {"FixedSteerRatio", {PERSISTENT, FLOAT}},
     {"FixedSteerRatioEnabled", {PERSISTENT, BOOL}},
+    {"FixedSteerRatioBase", {PERSISTENT, FLOAT}},
     {"Offroad_ChestnutModelError", {CLEAR_ON_MANAGER_START, JSON}},
 };

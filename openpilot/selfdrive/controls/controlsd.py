@@ -32,6 +32,7 @@ LaneChangeDirection = log.LaneChangeDirection
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 FIXED_STEER_RATIO_PARAM = "FixedSteerRatio"
 FIXED_STEER_RATIO_ENABLED_PARAM = "FixedSteerRatioEnabled"
+FIXED_STEER_RATIO_BASE_PARAM = "FixedSteerRatioBase"
 STEER_RATIO_MIN_FACTOR = 0.75
 STEER_RATIO_MAX_FACTOR = 1.25
 STEER_RATIO_ABSOLUTE_MAX = 23.33
@@ -88,6 +89,44 @@ class Controls(ControlsExt):
       device_motion = Pose.from_device_motion(self.sm['deviceMotion'])
       self.calibrated_pose = self.pose_calibrator.build_calibrated_pose(device_motion)
 
+  def _update_fixed_steer_ratio(self, lp) -> float | None:
+    """Fixed steer ratio to use, or None for the learned one.
+
+    On the first poll after it's turned on (no base stored yet), the current
+    learned ratio is stored as both the ratio and the base. The allowed range
+    is ±25% of that base.
+    """
+    value = self.params.get(FIXED_STEER_RATIO_PARAM)
+    enabled = self.params.get(FIXED_STEER_RATIO_ENABLED_PARAM)
+    base = self.params.get(FIXED_STEER_RATIO_BASE_PARAM)
+    legacy = enabled is None
+    if legacy:
+      enabled = value is not None  # no enable flag yet: a stored ratio means enabled
+
+    if not enabled:
+      if base is not None:
+        self.params.remove(FIXED_STEER_RATIO_BASE_PARAM)
+      return None
+
+    if base is None:
+      if legacy and value is not None:
+        base = max(float(self.CP.steerRatio), 0.1)  # keep the old value, window around stock
+      else:
+        if not self.sm.valid['vehicleParameters'] or not lp.steerRatio > 0.:
+          return None  # wait for a learned ratio before seeding
+        base = round(float(lp.steerRatio), 1)
+        value = base
+        self.params.put(FIXED_STEER_RATIO_PARAM, float(value))
+        cloudlog.info(f"Fixed steer ratio seeded from learned ratio: {base:.1f}")
+      self.params.put(FIXED_STEER_RATIO_BASE_PARAM, float(base))
+
+    if value is None or not math.isfinite(value):
+      value = base
+    base = max(float(base), 0.1)
+    min_ratio = min(base * STEER_RATIO_MIN_FACTOR, STEER_RATIO_ABSOLUTE_MAX)
+    max_ratio = max(min_ratio, min(base * STEER_RATIO_MAX_FACTOR, STEER_RATIO_ABSOLUTE_MAX))
+    return max(min_ratio, min(float(value), max_ratio))
+
   def state_control(self):
     CS = self.sm['carState']
 
@@ -100,26 +139,7 @@ class Controls(ControlsExt):
     now = time.monotonic()
     if now >= self._fixed_steer_ratio_poll_time:
       self._fixed_steer_ratio_poll_time = now + FIXED_STEER_RATIO_POLL_INTERVAL
-      value = self.params.get(FIXED_STEER_RATIO_PARAM)
-      enabled = self.params.get(FIXED_STEER_RATIO_ENABLED_PARAM)
-      try:
-        fixed_ratio = float(value) if value not in (None, "") else None
-      except (TypeError, ValueError):
-        fixed_ratio = None
-
-      stock_ratio = max(float(self.CP.steerRatio), 0.1)
-      # No enable flag written yet (legacy): a stored ratio alone means enabled
-      if enabled is not None:
-        if not enabled:
-          fixed_ratio = None
-        elif fixed_ratio is None:
-          # Enabled (e.g. from sunnylink) with no stored ratio: hold the stock ratio
-          fixed_ratio = stock_ratio
-      min_ratio = min(stock_ratio * STEER_RATIO_MIN_FACTOR, STEER_RATIO_ABSOLUTE_MAX)
-      max_ratio = max(min_ratio, min(stock_ratio * STEER_RATIO_MAX_FACTOR, STEER_RATIO_ABSOLUTE_MAX))
-      # Clamp to the safe window around the stock ratio (sunnylink allows a wider range)
-      self._fixed_steer_ratio = (max(min_ratio, min(fixed_ratio, max_ratio))
-                                 if fixed_ratio is not None and math.isfinite(fixed_ratio) else None)
+      self._fixed_steer_ratio = self._update_fixed_steer_ratio(lp)
 
       if self._fixed_steer_ratio != self._fixed_steer_ratio_logged:
         if self._fixed_steer_ratio is None:
