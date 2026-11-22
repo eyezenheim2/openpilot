@@ -111,3 +111,8 @@ sections:
     widget: toggle
     title: Tesla Rainbow Mode
     description: Display a rainbow effect on the path the model wants to take. It does not affect driving in any way.
+  - key: LeadCarView
+    widget: toggle
+    title: 'Onroad View: Cartoon'
+    description: 'Off = normal view (camera, lane lines and path). On = cartoon view: cartoon-filtered live camera with
+      your car, the lead car, and a blue path between them. Visual only; it does not affect driving in any way.'
