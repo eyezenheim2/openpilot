@@ -44,13 +44,53 @@ if COMMA_HARDWARE:
     #version 300 es
     #extension GL_OES_EGL_image_external_essl3 : enable
     precision mediump float;
-    in vec2 fragTexCoord;
+    in highp vec2 fragTexCoord;
     uniform samplerExternalOES texture0;
     out vec4 fragColor;
     uniform int engaged;
     uniform int enhance_driver;
 
+    vec3 sample_rgb(highp vec2 tc) { return texture(texture0, tc).rgb; }
+
+// --- cartoon look: smoothed, vivid, cel-banded color with ink outlines along real edges ---
+uniform int cartoon;
+uniform highp vec2 texel;  // one on-screen pixel, in texture coordinates
+
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+vec3 cartoonize(highp vec2 tc) {
+  highp vec2 dx = vec2(texel.x, 0.0);
+  highp vec2 dy = vec2(0.0, texel.y);
+  vec3 c  = sample_rgb(tc);
+  vec3 n  = sample_rgb(tc - dy);
+  vec3 s  = sample_rgb(tc + dy);
+  vec3 e  = sample_rgb(tc + dx);
+  vec3 w  = sample_rgb(tc - dx);
+  vec3 ne = sample_rgb(tc - dy + dx);
+  vec3 nw = sample_rgb(tc - dy - dx);
+  vec3 se = sample_rgb(tc + dy + dx);
+  vec3 sw = sample_rgb(tc + dy - dx);
+
+  // ink: sobel on luma, so outlines follow real objects (cars, buildings, poles, trees)
+  float gx = (luma(ne) + 2.0 * luma(e) + luma(se)) - (luma(nw) + 2.0 * luma(w) + luma(sw));
+  float gy = (luma(sw) + 2.0 * luma(s) + luma(se)) - (luma(nw) + 2.0 * luma(n) + luma(ne));
+  float ink = smoothstep(0.20, 0.42, sqrt(gx * gx + gy * gy));
+
+  // flatten texture noise, then push colors toward bold flat paint
+  vec3 avg = (c * 4.0 + n + s + e + w + 0.5 * (ne + nw + se + sw)) / 10.0;
+  float l = luma(avg);
+  vec3 chroma = (avg - vec3(l)) * 1.7;
+  float band = clamp(l, 0.0, 1.0) * 5.0;
+  float lq = (floor(band) + smoothstep(0.4, 0.6, fract(band))) / 5.0;  // 5 soft cel bands
+  vec3 col = clamp(vec3(0.06 + lq * 0.94) + chroma, 0.0, 1.0);
+  return mix(col, vec3(0.05, 0.05, 0.09), ink);
+}
+
     void main() {
+      if (cartoon == 1) {
+        fragColor = vec4(cartoonize(fragTexCoord), 1.0);
+        return;
+      }
       vec4 color = texture(texture0, fragTexCoord);
       if (engaged == 1) {
         float gray = dot(color.rgb, vec3(0.299, 0.587, 0.114));  // Luma
@@ -80,7 +120,51 @@ else:
     uniform int engaged;
     uniform int enhance_driver;
 
+    vec3 sample_rgb(vec2 tc) {
+      float y = texture(texture0, tc).r;
+      vec2 uv = texture(texture1, tc).ra - 0.5;
+      return vec3(y + 1.402*uv.y, y - 0.344*uv.x - 0.714*uv.y, y + 1.772*uv.x);
+    }
+
+// --- cartoon look: smoothed, vivid, cel-banded color with ink outlines along real edges ---
+uniform int cartoon;
+uniform vec2 texel;  // one on-screen pixel, in texture coordinates
+
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+vec3 cartoonize(vec2 tc) {
+  vec2 dx = vec2(texel.x, 0.0);
+  vec2 dy = vec2(0.0, texel.y);
+  vec3 c  = sample_rgb(tc);
+  vec3 n  = sample_rgb(tc - dy);
+  vec3 s  = sample_rgb(tc + dy);
+  vec3 e  = sample_rgb(tc + dx);
+  vec3 w  = sample_rgb(tc - dx);
+  vec3 ne = sample_rgb(tc - dy + dx);
+  vec3 nw = sample_rgb(tc - dy - dx);
+  vec3 se = sample_rgb(tc + dy + dx);
+  vec3 sw = sample_rgb(tc + dy - dx);
+
+  // ink: sobel on luma, so outlines follow real objects (cars, buildings, poles, trees)
+  float gx = (luma(ne) + 2.0 * luma(e) + luma(se)) - (luma(nw) + 2.0 * luma(w) + luma(sw));
+  float gy = (luma(sw) + 2.0 * luma(s) + luma(se)) - (luma(nw) + 2.0 * luma(n) + luma(ne));
+  float ink = smoothstep(0.20, 0.42, sqrt(gx * gx + gy * gy));
+
+  // flatten texture noise, then push colors toward bold flat paint
+  vec3 avg = (c * 4.0 + n + s + e + w + 0.5 * (ne + nw + se + sw)) / 10.0;
+  float l = luma(avg);
+  vec3 chroma = (avg - vec3(l)) * 1.7;
+  float band = clamp(l, 0.0, 1.0) * 5.0;
+  float lq = (floor(band) + smoothstep(0.4, 0.6, fract(band))) / 5.0;  // 5 soft cel bands
+  vec3 col = clamp(vec3(0.06 + lq * 0.94) + chroma, 0.0, 1.0);
+  return mix(col, vec3(0.05, 0.05, 0.09), ink);
+}
+
     void main() {
+      if (cartoon == 1) {
+        fragColor = vec4(cartoonize(fragTexCoord), 1.0);
+        return;
+      }
       float y = texture(texture0, fragTexCoord).r;
       vec2 uv = texture(texture1, fragTexCoord).ra - 0.5;
       vec3 rgb = vec3(y + 1.402*uv.y, y - 0.344*uv.x - 0.714*uv.y, y + 1.772*uv.x);
@@ -127,6 +211,11 @@ class CameraView(Widget):
     self._engaged_val = rl.ffi.new("int[1]", [1])
     self._enhance_driver_loc = rl.get_shader_location(self.shader, "enhance_driver")
     self._enhance_driver_val = rl.ffi.new("int[1]", [1 if stream_type == VisionStreamType.VISION_STREAM_CABIN else 0])
+    self._cartoon_loc = rl.get_shader_location(self.shader, "cartoon")
+    self._cartoon_val = rl.ffi.new("int[1]", [0])
+    self._texel_loc = rl.get_shader_location(self.shader, "texel")
+    self._texel_val = rl.ffi.new("float[2]", [0.0, 0.0])
+    self._dst_size = (1.0, 1.0)
 
     self.frame: VisionBuf | None = None
     self.texture_y: rl.Texture | None = None
@@ -259,6 +348,7 @@ class CameraView(Widget):
     y_offset += transform[1, 2] * rect.height / 2
 
     dst_rect = rl.Rectangle(x_offset, y_offset, scale_x, scale_y)
+    self._dst_size = (abs(scale_x), abs(scale_y))
 
     # Render with appropriate method
     if COMMA_HARDWARE:
@@ -324,6 +414,16 @@ class CameraView(Widget):
     self._engaged_val[0] = 1 if ui_state.status != UIStatus.DISENGAGED else 0
     rl.set_shader_value(self.shader, self._engaged_loc, self._engaged_val, rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
     rl.set_shader_value(self.shader, self._enhance_driver_loc, self._enhance_driver_val, rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
+
+    # cartoon filter on the road cameras when the cartoon view is on (never the driver camera)
+    cartoon = self._stream_type != VisionStreamType.VISION_STREAM_CABIN and getattr(ui_state, "lead_car_view", False)
+    self._cartoon_val[0] = 1 if cartoon else 0
+    rl.set_shader_value(self.shader, self._cartoon_loc, self._cartoon_val, rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
+    if cartoon:
+      # sample neighbours one screen pixel apart so outline thickness is constant on screen
+      self._texel_val[0] = 1.0 / max(self._dst_size[0], 1.0)
+      self._texel_val[1] = 1.0 / max(self._dst_size[1], 1.0)
+      rl.set_shader_value(self.shader, self._texel_loc, self._texel_val, rl.ShaderUniformDataType.SHADER_UNIFORM_VEC2)
 
   def _ensure_connection(self) -> bool:
     if not self.client.is_connected():
