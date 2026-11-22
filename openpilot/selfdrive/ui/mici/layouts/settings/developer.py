@@ -94,8 +94,8 @@ class DeveloperLayoutMici(NavScroller):
                                                     description="Firmer, less floaty steering: stronger curve feedforward, " +
                                                                 "tighter lane hold, and damping against weave. Applies " +
                                                                 "within about a second.")
-    self._lead_car_view_toggle = BigParamControl("cartoon lead car view", "LeadCarView",
-                                                  description="Cartoon-filtered live camera (flat colors, ink outlines) with your car, " +
+    self._lead_car_view_toggle = BigParamControl("gta view", "LeadCarView",
+                                                  description="GTA VI-style color grade on the live camera, with your car, " +
                                                               "the lead car, and a blue path between them, in place of lane lines.")
     self._lane_centering_toggle = BigParamControl("SPLC (StarPilot Lane Centering)", "LaneCentering",
                                                   toggle_callback=self._update_lane_centering_settings_enabled,

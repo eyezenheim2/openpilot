@@ -1,4 +1,4 @@
-"""Cartoon Tesla-style onroad view over the live camera: our car, the lead car, and a blue path between them.
+"""Tesla-style onroad view over the GTA-graded live camera: our car, the lead car, and a blue path between them.
 
 Everything is drawn through ModelRenderer's car-space -> screen transform, so the path and
 the lead car line up with the same road geometry the normal overlay uses. Our own car can't be
@@ -25,7 +25,7 @@ BLUE = (30, 120, 255)
 BLUE_LIGHT = (120, 190, 255)
 OUTLINE = (12, 14, 28)
 EGO_BODY = (250, 250, 252)
-LEAD_BODY = (255, 138, 36)
+LEAD_BODY = (176, 182, 192)
 
 
 def _color(rgb, alpha: float) -> rl.Color:
@@ -53,11 +53,11 @@ def _rrect(r: rl.Rectangle, roundness: float, fill: rl.Color, line: rl.Color, o:
 
 
 def draw_car_rear(cx: float, bottom: float, w: float, h: float, body, alpha: float = 1.0, brake: bool = False):
-  """Cartoon rear view of a car. (cx, bottom) is where the tires meet the road."""
+  """Stylized rear view of a car. (cx, bottom) is where the tires meet the road."""
   if w < 2 or h < 2 or alpha <= 0.01:
     return
 
-  o = max(1.0, w * 0.03)  # outline thickness scales with the car
+  o = max(0.75, w * 0.012)  # thin edge line, scales with the car
   line_c = _color(OUTLINE, alpha)
   body_c = _color(body, alpha)
   hi_c = _color(_shade(body, 1.25) if max(body) < 230 else (255, 255, 255), alpha)
@@ -182,10 +182,9 @@ class LeadCarView:
   def _draw_path(self, rect: rl.Rectangle, start_d: float, end_d: float, has_lead: bool, status):
     xs = np.linspace(start_d, end_d, 40)
     offset = np.array([rect.x, rect.y], dtype=np.float32)
-    outer = self._ribbon(xs, PATH_HALF_WIDTH + 0.14)
     fill = self._ribbon(xs, PATH_HALF_WIDTH)
     stripe = self._ribbon(xs, PATH_HALF_WIDTH * 0.22)
-    if fill.shape[0] < 4 or outer.shape[0] < 4:
+    if fill.shape[0] < 4:
       return
 
     if status == UIStatus.DISENGAGED:
@@ -196,8 +195,8 @@ class LeadCarView:
       rgb, light = BLUE, BLUE_LIGHT
     fade_alpha = 0.55 if status == UIStatus.DISENGAGED else 1.0
 
-    bottom = float(outer[:, 1].max()) / rect.height
-    top = float(outer[:, 1].min()) / rect.height
+    bottom = float(fill[:, 1].max()) / rect.height
+    top = float(fill[:, 1].min()) / rect.height
 
     def grad(c, a):
       g = Gradient(start=(0.0, bottom), end=(0.0, top), colors=[], stops=[])
@@ -207,10 +206,9 @@ class LeadCarView:
         g.colors, g.stops = [_color(c, a), _color(c, a), _color(c, 0.0)], [0.0, 0.6, 1.0]
       return g
 
-    draw_polygon(rect, outer + offset, gradient=grad(OUTLINE, 0.9 * fade_alpha))
     draw_polygon(rect, fill + offset, gradient=grad(rgb, 0.95 * fade_alpha))
     if stripe.shape[0] >= 4:
-      draw_polygon(rect, stripe + offset, gradient=grad(light, 0.9 * fade_alpha))
+      draw_polygon(rect, stripe + offset, gradient=grad(light, 0.35 * fade_alpha))
 
   def _draw_lead(self, rect: rl.Rectangle, d: float, y_rel: float, alpha: float):
     # radar yRel is left-positive; the model frame is right-positive

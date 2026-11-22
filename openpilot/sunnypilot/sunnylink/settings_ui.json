@@ -1553,8 +1553,8 @@
             {
               "key": "LeadCarView",
               "widget": "toggle",
-              "title": "Onroad View: Cartoon",
-              "description": "Off = normal view (camera, lane lines and path). On = cartoon view: cartoon-filtered live camera with your car, the lead car, and a blue path between them. Visual only; it does not affect driving in any way."
+              "title": "Onroad View: GTA",
+              "description": "Off = normal view (camera, lane lines and path). On = GTA view: GTA VI-style color grade on the live camera with your car, the lead car, and a blue path between them. Visual only; it does not affect driving in any way."
             }
           ]
         }

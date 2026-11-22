@@ -52,43 +52,53 @@ if COMMA_HARDWARE:
 
     vec3 sample_rgb(highp vec2 tc) { return texture(texture0, tc).rgb; }
 
-// --- cartoon look: smoothed, vivid, cel-banded color with ink outlines along real edges ---
-uniform int cartoon;
+// --- GTA VI-style grade: vibrant color, teal shadows, warm orange/pink highlights, bloom, vignette ---
+uniform int stylize;
 uniform highp vec2 texel;  // one on-screen pixel, in texture coordinates
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
-vec3 cartoonize(highp vec2 tc) {
-  highp vec2 dx = vec2(texel.x, 0.0);
-  highp vec2 dy = vec2(0.0, texel.y);
-  vec3 c  = sample_rgb(tc);
-  vec3 n  = sample_rgb(tc - dy);
-  vec3 s  = sample_rgb(tc + dy);
-  vec3 e  = sample_rgb(tc + dx);
-  vec3 w  = sample_rgb(tc - dx);
-  vec3 ne = sample_rgb(tc - dy + dx);
-  vec3 nw = sample_rgb(tc - dy - dx);
-  vec3 se = sample_rgb(tc + dy + dx);
-  vec3 sw = sample_rgb(tc + dy - dx);
+vec3 gta_grade(highp vec2 tc) {
+  vec3 c = sample_rgb(tc);
 
-  // ink: sobel on luma, so outlines follow real objects (cars, buildings, poles, trees)
-  float gx = (luma(ne) + 2.0 * luma(e) + luma(se)) - (luma(nw) + 2.0 * luma(w) + luma(sw));
-  float gy = (luma(sw) + 2.0 * luma(s) + luma(se)) - (luma(nw) + 2.0 * luma(n) + luma(ne));
-  float ink = smoothstep(0.20, 0.42, sqrt(gx * gx + gy * gy));
+  // bloom: bright areas (sky, sun glare, lights) bleed a warm glow
+  highp vec2 r = texel * 4.0;
+  vec3 b = sample_rgb(tc + vec2(r.x, r.y)) + sample_rgb(tc + vec2(-r.x, r.y)) +
+           sample_rgb(tc + vec2(r.x, -r.y)) + sample_rgb(tc + vec2(-r.x, -r.y));
+  vec3 bloom = max(b * 0.25 - vec3(0.62), vec3(0.0)) * 1.4;
 
-  // flatten texture noise, then push colors toward bold flat paint
-  vec3 avg = (c * 4.0 + n + s + e + w + 0.5 * (ne + nw + se + sw)) / 10.0;
-  float l = luma(avg);
-  vec3 chroma = (avg - vec3(l)) * 1.7;
-  float band = clamp(l, 0.0, 1.0) * 5.0;
-  float lq = (floor(band) + smoothstep(0.4, 0.6, fract(band))) / 5.0;  // 5 soft cel bands
-  vec3 col = clamp(vec3(0.06 + lq * 0.94) + chroma, 0.0, 1.0);
-  return mix(col, vec3(0.05, 0.05, 0.09), ink);
+  // vibrance: lift dull colors (asphalt, foliage, buildings) more than already-saturated ones
+  float l = luma(c);
+  float sat = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+  c = mix(vec3(l), c, 1.6 + 0.9 * (1.0 - sat));
+
+  // filmic S-curve for contrast
+  c = clamp(c, 0.0, 1.0);
+  c = mix(c, c * c * (3.0 - 2.0 * c), 0.7);
+
+  // split tone: teal shadows, warm orange/pink highlights (Vice City sunset)
+  l = luma(c);
+  float hi = smoothstep(0.35, 0.95, l);
+  float lo = 1.0 - smoothstep(0.05, 0.55, l);
+  c += vec3(-0.04, 0.06, 0.11) * lo;
+  c += vec3(0.16, 0.05, -0.05) * hi;
+
+  // Vice City sky: bright, blue-ish areas pushed toward pink / purple
+  float sky = smoothstep(0.5, 0.85, l) * smoothstep(-0.02, 0.08, c.b - c.r);
+  c += vec3(0.14, -0.05, 0.05) * sky;
+
+  c += bloom * vec3(1.0, 0.72, 0.55);
+
+  // gentle vignette
+  highp vec2 v = tc - vec2(0.5);
+  c *= 1.0 - 0.35 * dot(v, v) * 2.0;
+
+  return clamp(c, 0.0, 1.0);
 }
 
     void main() {
-      if (cartoon == 1) {
-        fragColor = vec4(cartoonize(fragTexCoord), 1.0);
+      if (stylize == 1) {
+        fragColor = vec4(gta_grade(fragTexCoord), 1.0);
         return;
       }
       vec4 color = texture(texture0, fragTexCoord);
@@ -126,43 +136,53 @@ else:
       return vec3(y + 1.402*uv.y, y - 0.344*uv.x - 0.714*uv.y, y + 1.772*uv.x);
     }
 
-// --- cartoon look: smoothed, vivid, cel-banded color with ink outlines along real edges ---
-uniform int cartoon;
+// --- GTA VI-style grade: vibrant color, teal shadows, warm orange/pink highlights, bloom, vignette ---
+uniform int stylize;
 uniform vec2 texel;  // one on-screen pixel, in texture coordinates
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
-vec3 cartoonize(vec2 tc) {
-  vec2 dx = vec2(texel.x, 0.0);
-  vec2 dy = vec2(0.0, texel.y);
-  vec3 c  = sample_rgb(tc);
-  vec3 n  = sample_rgb(tc - dy);
-  vec3 s  = sample_rgb(tc + dy);
-  vec3 e  = sample_rgb(tc + dx);
-  vec3 w  = sample_rgb(tc - dx);
-  vec3 ne = sample_rgb(tc - dy + dx);
-  vec3 nw = sample_rgb(tc - dy - dx);
-  vec3 se = sample_rgb(tc + dy + dx);
-  vec3 sw = sample_rgb(tc + dy - dx);
+vec3 gta_grade(vec2 tc) {
+  vec3 c = sample_rgb(tc);
 
-  // ink: sobel on luma, so outlines follow real objects (cars, buildings, poles, trees)
-  float gx = (luma(ne) + 2.0 * luma(e) + luma(se)) - (luma(nw) + 2.0 * luma(w) + luma(sw));
-  float gy = (luma(sw) + 2.0 * luma(s) + luma(se)) - (luma(nw) + 2.0 * luma(n) + luma(ne));
-  float ink = smoothstep(0.20, 0.42, sqrt(gx * gx + gy * gy));
+  // bloom: bright areas (sky, sun glare, lights) bleed a warm glow
+  vec2 r = texel * 4.0;
+  vec3 b = sample_rgb(tc + vec2(r.x, r.y)) + sample_rgb(tc + vec2(-r.x, r.y)) +
+           sample_rgb(tc + vec2(r.x, -r.y)) + sample_rgb(tc + vec2(-r.x, -r.y));
+  vec3 bloom = max(b * 0.25 - vec3(0.62), vec3(0.0)) * 1.4;
 
-  // flatten texture noise, then push colors toward bold flat paint
-  vec3 avg = (c * 4.0 + n + s + e + w + 0.5 * (ne + nw + se + sw)) / 10.0;
-  float l = luma(avg);
-  vec3 chroma = (avg - vec3(l)) * 1.7;
-  float band = clamp(l, 0.0, 1.0) * 5.0;
-  float lq = (floor(band) + smoothstep(0.4, 0.6, fract(band))) / 5.0;  // 5 soft cel bands
-  vec3 col = clamp(vec3(0.06 + lq * 0.94) + chroma, 0.0, 1.0);
-  return mix(col, vec3(0.05, 0.05, 0.09), ink);
+  // vibrance: lift dull colors (asphalt, foliage, buildings) more than already-saturated ones
+  float l = luma(c);
+  float sat = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+  c = mix(vec3(l), c, 1.6 + 0.9 * (1.0 - sat));
+
+  // filmic S-curve for contrast
+  c = clamp(c, 0.0, 1.0);
+  c = mix(c, c * c * (3.0 - 2.0 * c), 0.7);
+
+  // split tone: teal shadows, warm orange/pink highlights (Vice City sunset)
+  l = luma(c);
+  float hi = smoothstep(0.35, 0.95, l);
+  float lo = 1.0 - smoothstep(0.05, 0.55, l);
+  c += vec3(-0.04, 0.06, 0.11) * lo;
+  c += vec3(0.16, 0.05, -0.05) * hi;
+
+  // Vice City sky: bright, blue-ish areas pushed toward pink / purple
+  float sky = smoothstep(0.5, 0.85, l) * smoothstep(-0.02, 0.08, c.b - c.r);
+  c += vec3(0.14, -0.05, 0.05) * sky;
+
+  c += bloom * vec3(1.0, 0.72, 0.55);
+
+  // gentle vignette
+  vec2 v = tc - vec2(0.5);
+  c *= 1.0 - 0.35 * dot(v, v) * 2.0;
+
+  return clamp(c, 0.0, 1.0);
 }
 
     void main() {
-      if (cartoon == 1) {
-        fragColor = vec4(cartoonize(fragTexCoord), 1.0);
+      if (stylize == 1) {
+        fragColor = vec4(gta_grade(fragTexCoord), 1.0);
         return;
       }
       float y = texture(texture0, fragTexCoord).r;
@@ -211,7 +231,7 @@ class CameraView(Widget):
     self._engaged_val = rl.ffi.new("int[1]", [1])
     self._enhance_driver_loc = rl.get_shader_location(self.shader, "enhance_driver")
     self._enhance_driver_val = rl.ffi.new("int[1]", [1 if stream_type == VisionStreamType.VISION_STREAM_CABIN else 0])
-    self._cartoon_loc = rl.get_shader_location(self.shader, "cartoon")
+    self._cartoon_loc = rl.get_shader_location(self.shader, "stylize")
     self._cartoon_val = rl.ffi.new("int[1]", [0])
     self._texel_loc = rl.get_shader_location(self.shader, "texel")
     self._texel_val = rl.ffi.new("float[2]", [0.0, 0.0])
@@ -415,12 +435,12 @@ class CameraView(Widget):
     rl.set_shader_value(self.shader, self._engaged_loc, self._engaged_val, rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
     rl.set_shader_value(self.shader, self._enhance_driver_loc, self._enhance_driver_val, rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
 
-    # cartoon filter on the road cameras when the cartoon view is on (never the driver camera)
+    # GTA-style grade on the road cameras when the stylized view is on (never the driver camera)
     cartoon = self._stream_type != VisionStreamType.VISION_STREAM_CABIN and getattr(ui_state, "lead_car_view", False)
     self._cartoon_val[0] = 1 if cartoon else 0
     rl.set_shader_value(self.shader, self._cartoon_loc, self._cartoon_val, rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
     if cartoon:
-      # sample neighbours one screen pixel apart so outline thickness is constant on screen
+      # bloom taps are spaced in screen pixels so the glow size is constant on screen
       self._texel_val[0] = 1.0 / max(self._dst_size[0], 1.0)
       self._texel_val[1] = 1.0 / max(self._dst_size[1], 1.0)
       rl.set_shader_value(self.shader, self._texel_loc, self._texel_val, rl.ShaderUniformDataType.SHADER_UNIFORM_VEC2)
