@@ -18,14 +18,13 @@ LEAD_GAP = 0.4  # m, path stops just short of the lead's bumper
 NO_LEAD_MIN_DIST = 20.0  # m
 NO_LEAD_TIME = 4.0  # s of travel shown when there's no lead
 EGO_WIDTH_FRAC = 0.20  # our car's width as a fraction of the view width
-EGO_ASPECT = 0.72  # height / width of our car sprite
+EGO_ASPECT = 0.92  # height / width of our car sprite (taller: chase-cam view shows the roof)
 EGO_BOTTOM_MARGIN = 4  # px
 
 BLUE = (30, 120, 255)
 BLUE_LIGHT = (120, 190, 255)
-OUTLINE = (12, 14, 28)
-EGO_BODY = (250, 250, 252)
-LEAD_BODY = (176, 182, 192)
+EGO_BODY = (196, 201, 209)  # silver, like the Tesla visualization
+LEAD_BODY = (120, 125, 134)
 
 
 def _color(rgb, alpha: float) -> rl.Color:
@@ -42,72 +41,96 @@ def _quad(tl, tr, br, bl, color):
   rl.draw_triangle(tl, br, tr, color)
 
 
-def _grow(r: rl.Rectangle, o: float) -> rl.Rectangle:
-  return rl.Rectangle(r.x - o, r.y - o, r.width + 2 * o, r.height + 2 * o)
+def _vgrad_rrect(r: rl.Rectangle, roundness: float, top: rl.Color, bottom: rl.Color, steps: int = 6):
+  """Rounded rect with a vertical shade, built from stacked rounded slices (raylib has no rounded gradient)."""
+  rl.draw_rectangle_rounded(r, roundness, 8, bottom)
+  for i in range(steps):
+    k = i / steps
+    c = rl.Color(int(top.r + (bottom.r - top.r) * k), int(top.g + (bottom.g - top.g) * k),
+                 int(top.b + (bottom.b - top.b) * k), int(top.a + (bottom.a - top.a) * k))
+    sh = r.height * (1.0 - k)
+    rl.draw_rectangle_rounded(rl.Rectangle(r.x, r.y, r.width, sh), min(1.0, roundness * r.height / max(sh, 1.0)), 8, c)
 
 
-def _rrect(r: rl.Rectangle, roundness: float, fill: rl.Color, line: rl.Color, o: float):
-  """Cartoon rounded rect: dark outline underneath, flat fill on top."""
-  rl.draw_rectangle_rounded(_grow(r, o), roundness, 8, line)
-  rl.draw_rectangle_rounded(r, roundness, 8, fill)
-
-
-def draw_car_rear(cx: float, bottom: float, w: float, h: float, body, alpha: float = 1.0, brake: bool = False):
-  """Stylized rear view of a car. (cx, bottom) is where the tires meet the road."""
+def draw_car_rear(cx: float, bottom: float, w: float, h: float, body, alpha: float = 1.0, brake: bool = False,
+                  roof: float = 0.0):
+  """Tesla-visualization style rear view. (cx, bottom) is where the tires meet the road.
+  roof: fraction of the height showing the roof from above (chase-cam look for our own car)."""
   if w < 2 or h < 2 or alpha <= 0.01:
     return
 
-  o = max(0.75, w * 0.012)  # thin edge line, scales with the car
-  line_c = _color(OUTLINE, alpha)
-  body_c = _color(body, alpha)
-  hi_c = _color(_shade(body, 1.25) if max(body) < 230 else (255, 255, 255), alpha)
-  dark_c = _color(_shade(body, 0.55), alpha)
-  glass_c = _color((70, 150, 230), alpha)
-  shine_c = rl.Color(255, 255, 255, int(170 * alpha))
+  A = lambda rgb, k=1.0: _color(rgb, alpha * k)  # noqa: E731
+  body_hi = _shade(body, 1.12)
+  body_lo = _shade(body, 0.72)
+  edge = A(_shade(body, 0.45), 0.9)
+  glass = (28, 32, 40)
 
-  rl.draw_ellipse(int(cx), int(bottom), w * 0.62, max(2.0, h * 0.11), rl.Color(0, 0, 0, int(110 * alpha)))
+  # soft contact shadow
+  rl.draw_ellipse(int(cx), int(bottom - h * 0.02), w * 0.58, max(2.0, h * 0.07), rl.Color(0, 0, 0, int(140 * alpha)))
 
   if w < 14:
-    _rrect(rl.Rectangle(cx - w / 2, bottom - h * 0.6, w, h * 0.6), 0.4, body_c, line_c, 1.0)
-    rl.draw_rectangle_rec(rl.Rectangle(cx - w * 0.34, bottom - h, w * 0.68, h * 0.4), glass_c)
+    rl.draw_rectangle_rec(rl.Rectangle(cx - w / 2, bottom - h * 0.55, w, h * 0.55), A(body))
+    rl.draw_rectangle_rec(rl.Rectangle(cx - w * 0.36, bottom - h, w * 0.72, h * 0.45), A(glass))
+    rl.draw_rectangle_rec(rl.Rectangle(cx - w * 0.48, bottom - h * 0.45, w * 0.96, max(1.0, h * 0.06)), rl.Color(200, 20, 30, int(255 * alpha)))
     return
 
-  # chunky tires
-  tw, th = w * 0.18, h * 0.22
+  # tires peeking out under the body
+  tw, th = w * 0.15, h * 0.13
   for side in (-1, 1):
-    tx = cx + side * (w / 2 - tw * 0.55) - tw / 2
-    _rrect(rl.Rectangle(tx, bottom - th, tw, th), 0.5, rl.Color(30, 30, 36, int(255 * alpha)), line_c, o)
+    rl.draw_rectangle_rounded(rl.Rectangle(cx + side * (w * 0.5 - tw * 0.62) - tw / 2, bottom - th, tw, th), 0.35, 4,
+                              rl.Color(14, 14, 16, int(255 * alpha)))
 
-  # cabin: outline, body-colored frame, glass, shine streak
-  body_top = bottom - h * 0.60
-  roof = bottom - h
-  base = body_top + h * 0.08
-  tl, tr = rl.Vector2(cx - w * 0.30, roof), rl.Vector2(cx + w * 0.30, roof)
-  br, bl = rl.Vector2(cx + w * 0.44, base), rl.Vector2(cx - w * 0.44, base)
-  _quad(rl.Vector2(tl.x - o, tl.y - o), rl.Vector2(tr.x + o, tr.y - o),
-        rl.Vector2(br.x + o, br.y), rl.Vector2(bl.x - o, bl.y), line_c)
-  _quad(tl, tr, br, bl, body_c)
-  i = max(1.5, w * 0.04)
-  _quad(rl.Vector2(tl.x + i, tl.y + i * 1.3), rl.Vector2(tr.x - i, tr.y + i * 1.3),
-        rl.Vector2(br.x - i * 1.6, br.y - i * 0.3), rl.Vector2(bl.x + i * 1.6, bl.y - i * 0.3), glass_c)
-  rl.draw_line_ex(rl.Vector2(cx - w * 0.20, base - h * 0.04), rl.Vector2(cx - w * 0.06, roof + h * 0.12), max(1.5, w * 0.035), shine_c)
+  roof_h = h * roof
+  greenhouse_top = bottom - h + roof_h
+  shoulder = bottom - h * 0.50  # where the rear glass meets the trunk
 
-  # body: outline, fill, top highlight band, bumper
-  body = rl.Rectangle(cx - w / 2, body_top, w, h * 0.46)
-  _rrect(body, 0.5, body_c, line_c, o)
-  rl.draw_rectangle_rounded(rl.Rectangle(body.x + w * 0.08, body_top + h * 0.03, w * 0.84, h * 0.06), 1.0, 6, hi_c)
-  rl.draw_rectangle_rounded(rl.Rectangle(cx - w * 0.36, bottom - h * 0.24, w * 0.72, h * 0.09), 0.8, 6, dark_c)
+  # roof seen from above (our car): tapered panel, dark glass roof like a Model Y
+  if roof_h > 1.0:
+    rt = rl.Vector2(cx - w * 0.22, bottom - h)
+    rtr = rl.Vector2(cx + w * 0.22, bottom - h)
+    rbr = rl.Vector2(cx + w * 0.30, greenhouse_top)
+    rbl = rl.Vector2(cx - w * 0.30, greenhouse_top)
+    _quad(rt, rtr, rbr, rbl, A(body_lo))
+    i = max(1.0, w * 0.025)
+    _quad(rl.Vector2(rt.x + i, rt.y + i), rl.Vector2(rtr.x - i, rtr.y + i),
+          rl.Vector2(rbr.x - i, rbr.y), rl.Vector2(rbl.x + i, rbl.y), A(glass, 0.95))
 
-  # big round tail lights
-  r = max(2.0, h * 0.075)
-  ty = body_top + h * 0.17
-  tail_c = rl.Color(255, 60, 60, int(255 * alpha)) if brake else rl.Color(210, 20, 40, int(255 * alpha))
-  for x in (cx - w * 0.37, cx + w * 0.37):
+  # C-pillars / sides of the cabin in body color, rear glass inset
+  tl, tr = rl.Vector2(cx - w * 0.30, greenhouse_top), rl.Vector2(cx + w * 0.30, greenhouse_top)
+  br, bl = rl.Vector2(cx + w * 0.45, shoulder), rl.Vector2(cx - w * 0.45, shoulder)
+  _quad(tl, tr, br, bl, A(body_hi))
+  corner = max(1.0, w * 0.05)  # round the top of the cabin
+  rl.draw_rectangle_rounded(rl.Rectangle(tl.x - corner * 0.3, tl.y - corner * 0.4, tr.x - tl.x + corner * 0.6, corner * 1.6), 1.0, 6, A(body_hi))
+  i = max(1.0, w * 0.04)
+  gtl, gtr = rl.Vector2(tl.x + i, tl.y + i * 0.6), rl.Vector2(tr.x - i, tr.y + i * 0.6)
+  gbr, gbl = rl.Vector2(br.x - i * 2.2, br.y - i * 0.4), rl.Vector2(bl.x + i * 2.2, bl.y - i * 0.4)
+  _quad(gtl, gtr, gbr, gbl, A(glass))
+  # sky reflection on the rear glass
+  _quad(rl.Vector2(gtl.x + (gtr.x - gtl.x) * 0.10, gtl.y + 1), rl.Vector2(gtl.x + (gtr.x - gtl.x) * 0.38, gtl.y + 1),
+        rl.Vector2(gbl.x + (gbr.x - gbl.x) * 0.22, gbl.y - 1), rl.Vector2(gbl.x + (gbr.x - gbl.x) * 0.02, gbl.y - 1),
+        rl.Color(255, 255, 255, int(28 * alpha)))
+
+  # rear body: smooth shaded shell, lighter on top like painted metal under sky light
+  shell = rl.Rectangle(cx - w / 2, shoulder - h * 0.03, w, bottom - h * 0.05 - (shoulder - h * 0.03))
+  rl.draw_rectangle_rounded(rl.Rectangle(shell.x - 0.6, shell.y - 0.6, shell.width + 1.2, shell.height + 1.2), 0.6, 10, edge)
+  _vgrad_rrect(shell, 0.6, A(body_hi), A(body_lo))
+  # trunk lip highlight
+  rl.draw_rectangle_rounded(rl.Rectangle(cx - w * 0.40, shell.y + h * 0.015, w * 0.80, max(1.0, h * 0.025)), 1.0, 4,
+                            rl.Color(255, 255, 255, int(70 * alpha)))
+
+  # Tesla-style thin wrap-around tail lights joined by a dark trim line
+  ly = shell.y + shell.height * 0.24
+  lh = max(1.5, h * 0.045)
+  red = rl.Color(255, 45, 45, int(255 * alpha)) if brake else rl.Color(190, 16, 30, int(255 * alpha))
+  rl.draw_rectangle_rec(rl.Rectangle(cx - w * 0.30, ly + lh * 0.25, w * 0.60, max(1.0, lh * 0.5)), A(_shade(body, 0.35)))
+  for x0, x1 in ((cx - w * 0.495, cx - w * 0.30), (cx + w * 0.30, cx + w * 0.495)):
+    rl.draw_rectangle_rounded(rl.Rectangle(x0, ly, x1 - x0, lh), 0.8, 4, red)
     if brake:
-      rl.draw_circle(int(x), int(ty), r * 2.0, rl.Color(255, 60, 60, int(80 * alpha)))
-    rl.draw_circle(int(x), int(ty), r + o, line_c)
-    rl.draw_circle(int(x), int(ty), r, tail_c)
-    rl.draw_circle(int(x - r * 0.35), int(ty - r * 0.35), max(1.0, r * 0.3), shine_c)
+      rl.draw_rectangle_rounded(rl.Rectangle(x0 - 3, ly - 3, x1 - x0 + 6, lh + 6), 0.8, 4, rl.Color(255, 40, 40, int(60 * alpha)))
+
+  # dark lower bumper / diffuser
+  rl.draw_rectangle_rounded(rl.Rectangle(cx - w * 0.42, bottom - h * 0.15, w * 0.84, h * 0.10), 0.7, 6,
+                            rl.Color(22, 24, 28, int(235 * alpha)))
 
 
 class LeadCarView:
@@ -172,7 +195,7 @@ class LeadCarView:
     w = rect.width * EGO_WIDTH_FRAC
     cc = sm['carControl']
     braking = sm['carState'].brakePressed or (cc.longActive and cc.actuators.accel < -0.5)
-    draw_car_rear(rect.x + ego_cx, rect.y + ego_bottom, w, w * EGO_ASPECT, EGO_BODY, 1.0, braking)
+    draw_car_rear(rect.x + ego_cx, rect.y + ego_bottom, w, w * EGO_ASPECT, EGO_BODY, 1.0, braking, roof=0.24)
 
   def _ribbon(self, xs: np.ndarray, half_width: float) -> np.ndarray:
     line = self._ground(xs)
@@ -223,4 +246,4 @@ class LeadCarView:
     h = bottom - float(scr[2, 1])
     if w > rect.width * 2 or h <= 0:
       return
-    draw_car_rear(rect.x + float(scr[0:2, 0].mean()), rect.y + bottom, w, h, LEAD_BODY, alpha)
+    draw_car_rear(rect.x + float(scr[0:2, 0].mean()), rect.y + bottom, w, h, LEAD_BODY, alpha, roof=0.06)
