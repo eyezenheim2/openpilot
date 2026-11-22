@@ -10,6 +10,7 @@ from openpilot.selfdrive.controls.radard import RADAR_TO_CAMERA
 from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.mici.onroad import blend_colors
+from openpilot.selfdrive.ui.mici.onroad.lead_car_view import LeadCarView
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.shader_polygon import draw_polygon, Gradient
 from openpilot.system.ui.widgets import Widget
@@ -68,6 +69,7 @@ class ModelRenderer(Widget, ModelRendererSP):
     self._acceleration_x = np.empty((0,), dtype=np.float32)
 
     self._torque_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
+    self._lead_car_view = LeadCarView(self)
 
     # 3x3 car space -> rect-origin space (draw methods add rect.x/y)
     self._car_space_transform = np.zeros((3, 3), dtype=np.float32)
@@ -136,6 +138,15 @@ class ModelRenderer(Widget, ModelRendererSP):
 
       self._update_model(lead_one, path_x_array)
       self._transform_dirty = False
+
+    # Tesla-style cartoon view: only our car, the lead car and the blue path
+    if ui_state.lead_car_view:
+      if radar_state is not None:
+        self._update_leads(sm)
+      else:
+        self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
+      self._lead_car_view.render(self._rect)
+      return
 
     # Draw elements (hide when disengaged)
     if ui_state.status != UIStatus.DISENGAGED:

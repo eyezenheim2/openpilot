@@ -324,6 +324,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"IsReleaseSpBranch", {CLEAR_ON_MANAGER_START, BOOL}},
     {"LaneCentering", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"PlantedSteering", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"LeadCarView", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"LaneCenteringE2EAuthority", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
     {"LaneCenteringPauseOnSignal", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"LaneCenterOffset", {PERSISTENT | BACKUP, FLOAT, "0.0"}},

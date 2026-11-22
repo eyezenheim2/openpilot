@@ -57,6 +57,7 @@ class UIStateSP:
     self.onroad_brightness_timer: int = 0
     self.onroad_brightness_timer_param: int = 0
     self.rainbow_path: bool = False
+    self.lead_car_view: bool = True
     self.road_name_toggle: bool = False
     self.rocket_fuel: bool = False
     self.speed_limit_mode = None
@@ -180,6 +181,7 @@ class UIStateSP:
     self.onroad_brightness = int(float(self.params.get("OnroadScreenOffBrightness", return_default=True)))
     self.onroad_brightness_timer_param = self.params.get("OnroadScreenOffTimer", return_default=True)
     self.rainbow_path = self.params.get_bool("RainbowMode")
+    self.lead_car_view = self.params.get_bool("LeadCarView")
     self.road_name_toggle = self.params.get_bool("RoadNameToggle")
     self.rocket_fuel = self.params.get_bool("RocketFuel")
     self.speed_limit_mode = self.params.get("SpeedLimitMode", return_default=True)

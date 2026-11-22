@@ -336,7 +336,9 @@ class AugmentedRoadView(CameraView):
     # Render the base camera view
     super()._render(self._content_rect)
 
-    self._draw_hud_backing(self._content_rect)
+    # the cartoon lead-car view sits on the live camera, so don't black it out
+    if not ui_state.lead_car_view:
+      self._draw_hud_backing(self._content_rect)
 
     # Draw all UI overlays
     self._model_renderer.render(self._content_rect)
