@@ -33,8 +33,10 @@ PATH = (40, 182, 154)  # sim's teal path
 PATH_ALPHA = 0.38
 
 EGO_PAINT = (246, 248, 247)  # sim default: pearl white
-LEAD_PAINT = (137, 157, 164)
-TRAFFIC_PAINT = [(137, 157, 164), (197, 201, 200), (102, 123, 129), (182, 182, 165)]  # the sim's traffic colours
+LEAD_PAINT = (246, 248, 247)  # other cars in white too, so they stand out on the dark road
+TRAFFIC_PAINT = [(246, 248, 247)]
+HALO = (190, 210, 235)  # soft light pool under other cars
+FAR_BOOST = (10.0, 40.0, 1.6)  # other cars drawn up to 1.6x larger with distance (position unchanged) so they read on the small screen
 GLASS = (52, 71, 78)
 UNDER = (59, 73, 75)
 TIRE = (38, 49, 49)
@@ -296,10 +298,10 @@ class TopView:
     shade = 0.55 + 0.45 * np.clip(normals @ LIGHT, 0.0, 1.0)
     return np.array(quads, dtype=np.float64), normals, keys, shade
 
-  def _draw_car(self, x_center: float, y: float, paint, alpha: float, brake: bool):
+  def _draw_car(self, x_center: float, y: float, paint, alpha: float, brake: bool, scale: float = 1.0):
     """Translate the template, drop faces turned away from the camera, paint the rest far to near."""
     quads, normals, keys, shade = self._car_template
-    pts = quads + _wp(x_center, y)
+    pts = quads * scale + _wp(x_center, y)
     centres = pts.mean(axis=1)
     to_eye = self._cam.eye - centres
     visible = np.einsum('ij,ij->i', normals, to_eye) > 0
@@ -313,11 +315,22 @@ class TopView:
       key = keys[i]
       rgb = paint if key == 'paint' else (BRAKE_ON if brake else BRAKE_OFF) if key == 'brake' else key
       k = shade[i]
-      _fan2d(scr[i], self._fog((int(rgb[0] * k), int(rgb[1] * k), int(rgb[2] * k)), alpha, float(dist[i])))
+      _fan2d(scr[i], _rgba(rgb, alpha, k))
 
-  def _shadow(self, x_center: float, y: float, alpha: float):
+  def _halo(self, x_center: float, y: float, alpha: float, scale: float = 1.0):
+    """Light pool on the road around a car, so it pops against the dark asphalt even when far away."""
+    o = _wp(x_center, y, 0.015)
+    for (hx, hz), a in (((2.2, 4.0), 0.10), ((1.7, 3.3), 0.16)):
+      hx, hz = hx * scale, hz * scale
+      pts = np.array([o + [-hx, 0, -hz], o + [hx, 0, -hz], o + [hx, 0, hz], o + [-hx, 0, hz]])
+      scr, z = self._cam.project(pts)
+      if z.min() >= NEAR:
+        _fan2d(scr, _rgba(HALO, a * alpha))
+
+  def _shadow(self, x_center: float, y: float, alpha: float, scale: float = 1.0):
     o = _wp(x_center, y, 0.02)
-    pts = np.array([o + [-1.15, 0, -2.6], o + [1.15, 0, -2.6], o + [1.15, 0, 2.6], o + [-1.15, 0, 2.6]])
+    hx, hz = 1.15 * scale, 2.6 * scale
+    pts = np.array([o + [-hx, 0, -hz], o + [hx, 0, -hz], o + [hx, 0, hz], o + [-hx, 0, hz]])
     scr, z = self._cam.project(pts)
     if z.min() >= NEAR:
       _fan2d(scr, rl.Color(0, 0, 0, int(110 * alpha)))
@@ -396,7 +409,11 @@ class TopView:
     braking = sm['carState'].brakePressed or (cc.longActive and cc.actuators.accel < -0.5)
     y0 = float(np.interp(0.0, path[:, 0], path[:, 1])) if path.shape[0] >= 2 else 0.0
     for x, y, paint, a in sorted(cars, key=lambda c: -c[0]):  # far to near so nearer cars overlap correctly
-      self._shadow(x + CAR_LEN / 2, y, a)
-      self._draw_car(x + CAR_LEN / 2, y, paint, a, False)
+      near, far, most = FAR_BOOST
+      k = 1.0 + (most - 1.0) * min(1.0, max(0.0, (x - near) / (far - near)))
+      cx = x + CAR_LEN * k / 2  # keep the rear bumper where the sensors put it
+      self._halo(cx, y, a, k)
+      self._shadow(cx, y, a, k)
+      self._draw_car(cx, y, paint, a, False, k)
     self._shadow(EGO_CENTER_X, y0, 1.0)
     self._draw_car(EGO_CENTER_X, y0, EGO_PAINT, 1.0, braking)
