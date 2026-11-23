@@ -16,6 +16,7 @@ from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.mici.onroad.long_indicator import LongIndicator
 from openpilot.selfdrive.ui.mici.onroad.model_renderer import ModelRenderer
 from openpilot.selfdrive.ui.mici.onroad.top_view import TopView
+from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.ui.mici.onroad.navigation import NavigationPanel, PANEL_WIDTH
 from openpilot.selfdrive.ui.mici.onroad.confidence_ball import ConfidenceBall
 from openpilot.selfdrive.ui.mici.onroad.cameraview import CameraView
@@ -199,6 +200,7 @@ class AugmentedRoadView(CameraView):
     self._navigation = NavigationPanel()
     self._model_renderer = ModelRenderer()
     self._top_view = TopView()
+    self._top_view_failed = False  # set if the top view ever errors; we fall back to the camera view
     self._hud_renderer = HudRenderer()
     self._long_indicator = LongIndicator()
     self._alert_renderer = AlertRenderer()
@@ -327,9 +329,14 @@ class AugmentedRoadView(CameraView):
     )
 
     # Top view renders its 3D scene offscreen first: render textures don't mix with an active scissor
-    top_view = ui_state.onroad_style == 2
+    top_view = ui_state.onroad_style == 2 and not self._top_view_failed
     if top_view:
-      self._top_view.prepare(self._content_rect)
+      try:
+        self._top_view.prepare(self._content_rect)
+      except Exception:
+        cloudlog.exception("top view failed, falling back to camera view")
+        self._top_view_failed = True
+        top_view = False
 
     # Enable scissor mode to clip all rendering within content rectangle boundaries
     # This creates a rendering viewport that prevents graphics from drawing outside the border
@@ -342,8 +349,13 @@ class AugmentedRoadView(CameraView):
 
     if top_view:
       # bird's-eye scene built from the model (road, lanes, path, camera-detected lead)
-      self._top_view.draw(self._content_rect)
-    else:
+      try:
+        self._top_view.draw(self._content_rect)
+      except Exception:
+        cloudlog.exception("top view failed, falling back to camera view")
+        self._top_view_failed = True
+        top_view = False
+    if not top_view:
       # Render the base camera view
       super()._render(self._content_rect)
 
