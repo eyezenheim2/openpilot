@@ -74,6 +74,7 @@ class UIState(UIStateSP):
         "navInstruction",
         "carOutput",
         "carControl",
+        "customReservedRawData1",
         "vehicleParameters",
         "testJoystick",
         "rawAudioData",

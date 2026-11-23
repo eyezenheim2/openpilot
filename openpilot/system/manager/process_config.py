@@ -65,6 +65,10 @@ def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 def navigation(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and params.get_bool("NavigationEnabled")
 
+def honda_objects(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # decodes the car's own tracked-object list for the UI's top view; never feeds driving
+  return started and CP is not None and CP.carFingerprint == "HONDA_ACCORD_11G"
+
 def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return not started
 
@@ -152,6 +156,7 @@ procs = [
   PythonProcess("maneuversd", "openpilot.tools.longitudinal_maneuvers.maneuversd", long_maneuver),
   PythonProcess("lateral_maneuversd", "openpilot.tools.lateral_maneuvers.lateral_maneuversd", lat_maneuver),
   PythonProcess("radard", "openpilot.selfdrive.controls.radard", only_onroad),
+  PythonProcess("honda_objectd", "openpilot.selfdrive.car.honda_objectd", honda_objects),
   PythonProcess("hardwared", "openpilot.system.hardware.hardwared", always_run),
   PythonProcess("modem", "openpilot.common.hardware.comma.modem", always_run, enabled=COMMA_HARDWARE),
   PythonProcess("tombstoned", "openpilot.system.tombstoned", always_run, enabled=not PC),

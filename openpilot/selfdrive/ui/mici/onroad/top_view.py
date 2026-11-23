@@ -5,7 +5,9 @@ Everything comes from what openpilot actually perceives through the road camera:
   - lane lines from the model (fading with their confidence)
   - the planned path (teal, like the sim) up to the lead car
   - the lead car from the vision model (modelV2.leadsV3), at its measured distance and lateral position
-Nothing is invented: the vision model only reports the lead in our lane, so that is the only other car drawn.
+  - on the 11th-gen Accord, the other cars the car's own sensors track (decoded by honda_objectd from the
+    driver-assist bus and published on customReservedRawData1, UI only)
+Nothing is invented: elsewhere the vision model only reports the lead in our lane, so that is the only other car drawn.
 
 Rendering is plain 2D: the 3D projection is done here in numpy (like the sim's SVG renderer) and the
 result is drawn with ordinary 2D triangles in back-to-front order. No render textures, no 3D mode and no
@@ -32,6 +34,7 @@ PATH_ALPHA = 0.38
 
 EGO_PAINT = (246, 248, 247)  # sim default: pearl white
 LEAD_PAINT = (137, 157, 164)
+TRAFFIC_PAINT = [(137, 157, 164), (197, 201, 200), (102, 123, 129), (182, 182, 165)]  # the sim's traffic colours
 GLASS = (52, 71, 78)
 UNDER = (59, 73, 75)
 TIRE = (38, 49, 49)
@@ -44,6 +47,10 @@ EGO_CENTER_X = -1.2  # the camera sits near the windshield, the car's centre is 
 CAR_LEN = 4.65
 LEAD_MIN_PROB = 0.5
 NEAR = 0.5  # m: anything closer to the virtual camera is skipped
+RADAR_TO_CAMERA = 1.52  # m, object distances are from the front bumper, model distances from the camera
+OBJ_DTYPE = np.dtype([('id', 'u1'), ('dist', '<f4'), ('lat', '<f4'), ('vrel', '<f4')])  # honda_objectd record
+OBJ_TIMEOUT = 0.4  # s without an update before a tracked car fades out
+LEAD_MATCH_X, LEAD_MATCH_Y = 6.0, 1.8  # m: a tracked car this close to the camera lead is the same car
 
 # Bird's-eye chase camera, relative to our car (metres)
 CAM_HEIGHT = 14.0
@@ -127,6 +134,7 @@ class TopView:
     self._lead_alpha = FirstOrderFilter(0.0, 0.15, dt)
     self._camera_offset = 0.0
     self._counter = 0
+    self._objects: dict[int, dict] = {}  # id -> {'x', 'y' filters, 'alpha' filter, 'seen' time}
 
   # ---------------------------------------------------------------- data
   def _update_data(self):
@@ -160,6 +168,31 @@ class TopView:
       self._lead_x.update(x)
       self._lead_y.update(y)
     self._lead_alpha.update(1.0 if visible else 0.0)
+    self._update_objects()
+
+  def _update_objects(self):
+    """Tracked cars from the car's own sensors (Accord 11G), smoothed per track id."""
+    sm = ui_state.sm
+    now = rl.get_time()
+    dt = 1 / gui_app.target_fps
+    if sm.updated['customReservedRawData1'] and sm.recv_frame['customReservedRawData1'] >= ui_state.started_frame:
+      raw = bytes(sm['customReservedRawData1'])
+      recs = np.frombuffer(raw[:len(raw) - len(raw) % OBJ_DTYPE.itemsize], dtype=OBJ_DTYPE)
+      for r in recs:
+        oid = int(r['id'])
+        x, y = float(r['dist']) + RADAR_TO_CAMERA, -float(r['lat'])  # model frame: y right-positive
+        o = self._objects.get(oid)
+        if o is None or abs(o['x'].x - x) > 10.0 or abs(o['y'].x - y) > 3.0:
+          o = {'x': FirstOrderFilter(x, 0.1, dt), 'y': FirstOrderFilter(y, 0.1, dt), 'alpha': FirstOrderFilter(0.0, 0.15, dt)}
+          self._objects[oid] = o
+        o['x'].update(x)
+        o['y'].update(y)
+        o['seen'] = now
+    for oid in list(self._objects):
+      o = self._objects[oid]
+      o['alpha'].update(1.0 if now - o['seen'] < OBJ_TIMEOUT else 0.0)
+      if now - o['seen'] > OBJ_TIMEOUT and o['alpha'].x < 0.02:
+        del self._objects[oid]
 
   # ---------------------------------------------------------------- helpers
   @staticmethod
@@ -334,8 +367,23 @@ class TopView:
       dash = None if i in (1, 2) else (12.0, 3.0)
       self._ribbon(ln, 0.06, -BEHIND, float(min(ln[-1, 0], 120.0)), LINE, 0.85 * min(1.0, prob * 1.4), dash)
 
-    # planned path: teal, from our front bumper to the lead (or as far as the model plans)
+    # cars to draw: tracked cars from the car's sensors, plus the camera lead unless one of them is that car
     lead_a = self._lead_alpha.x if self._lead_x.initialized else 0.0
+    cars = []  # (x_rear, y, paint, alpha)
+    lead_matched = False
+    for oid, o in self._objects.items():
+      x, y, a = o['x'].x, o['y'].x, o['alpha'].x
+      if a < 0.02 or x < EGO_CENTER_X + CAR_LEN:
+        continue
+      if lead_a > 0.3 and abs(x - self._lead_x.x) < LEAD_MATCH_X and abs(y - self._lead_y.x) < LEAD_MATCH_Y:
+        lead_matched = True
+        cars.append((x, y, LEAD_PAINT, a))
+      else:
+        cars.append((x, y, TRAFFIC_PAINT[oid % len(TRAFFIC_PAINT)], a))
+    if lead_a > 0.02 and not lead_matched:
+      cars.append((self._lead_x.x, self._lead_y.x, LEAD_PAINT, lead_a))
+
+    # planned path: teal, from our front bumper to the lead (or as far as the model plans)
     path = self._path
     if path.shape[0] >= 2 and status != UIStatus.DISENGAGED:
       end = float(min(path[-1, 0], 85.0))
@@ -347,9 +395,8 @@ class TopView:
     cc = sm['carControl']
     braking = sm['carState'].brakePressed or (cc.longActive and cc.actuators.accel < -0.5)
     y0 = float(np.interp(0.0, path[:, 0], path[:, 1])) if path.shape[0] >= 2 else 0.0
-    if lead_a > 0.02:
-      lead_c = self._lead_x.x + CAR_LEN / 2
-      self._shadow(lead_c, self._lead_y.x, lead_a)
-      self._draw_car(lead_c, self._lead_y.x, LEAD_PAINT, lead_a, False)
+    for x, y, paint, a in sorted(cars, key=lambda c: -c[0]):  # far to near so nearer cars overlap correctly
+      self._shadow(x + CAR_LEN / 2, y, a)
+      self._draw_car(x + CAR_LEN / 2, y, paint, a, False)
     self._shadow(EGO_CENTER_X, y0, 1.0)
     self._draw_car(EGO_CENTER_X, y0, EGO_PAINT, 1.0, braking)
