@@ -36,6 +36,9 @@ EGO_PAINT = (246, 248, 247)  # sim default: pearl white
 LEAD_PAINT = (246, 248, 247)  # other cars in white too, so they stand out on the dark road
 TRAFFIC_PAINT = [(246, 248, 247)]
 HALO = (190, 210, 235)  # soft light pool under other cars
+DISPLAY_DIST_SCALE = 0.5  # other cars are drawn at this fraction of their real gap to us, so they sit where they can be seen
+MIN_DISPLAY_GAP = 1.0  # m of drawn gap kept between our bumper and the nearest car
+IN_LANE_Y = 1.4  # m from our path: a car this close sideways is in our lane
 FAR_BOOST = (10.0, 40.0, 1.6)  # other cars drawn up to 1.6x larger with distance (position unchanged) so they read on the small screen
 GLASS = (52, 71, 78)
 UNDER = (59, 73, 75)
@@ -396,12 +399,27 @@ class TopView:
     if lead_a > 0.02 and not lead_matched:
       cars.append((self._lead_x.x, self._lead_y.x, LEAD_PAINT, lead_a))
 
-    # planned path: teal, from our front bumper to the lead (or as far as the model plans)
+    # draw other cars closer than they are (DISPLAY_DIST_SCALE of the real gap), keeping their lane:
+    # their offset from our path is preserved, so on curves they stay on the road
     path = self._path
+    ego_front = EGO_CENTER_X + CAR_LEN / 2
+
+    def to_display(x: float, y: float) -> tuple[float, float]:
+      x_d = ego_front + max(MIN_DISPLAY_GAP, (x - ego_front) * DISPLAY_DIST_SCALE)
+      if path.shape[0] >= 2:
+        y += float(np.interp(x_d, path[:, 0], path[:, 1]) - np.interp(x, path[:, 0], path[:, 1]))
+      return x_d, y
+
+    cars = [(*to_display(x, y), paint, a) for x, y, paint, a in cars]
+    # the path stops at the nearest drawn car in our lane, whether the camera or the car's sensors reported it
+    in_lane = [x for x, y, _, a in cars if a > 0.5 and path.shape[0] >= 2 and abs(y - float(np.interp(x, path[:, 0], path[:, 1]))) < IN_LANE_Y]
+    lead_disp_x = min(in_lane) if in_lane else None
+
+    # planned path: teal, from our front bumper to the (drawn) lead, or as far as the model plans
     if path.shape[0] >= 2 and status != UIStatus.DISENGAGED:
       end = float(min(path[-1, 0], 85.0))
-      if lead_a > 0.5:
-        end = min(end, self._lead_x.x - 0.5)
+      if lead_disp_x is not None:
+        end = min(end, lead_disp_x - 0.5)
       self._ribbon(path, 0.75, EGO_CENTER_X + 2.4, end, PATH, PATH_ALPHA)
 
     # cars: shadows on the road first, then the bodies far to near
