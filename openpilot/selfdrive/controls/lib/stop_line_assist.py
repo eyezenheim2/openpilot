@@ -16,12 +16,16 @@ from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 
 STOP_V = 0.3  # m/s: model speed treated as stopped
-STOP_FRACTION = 0.80  # aim for 80% of the model's stopping distance ...
-STOP_MARGIN = 2.0  # ... minus this many metres
+STOP_FRACTION = 0.90  # aim for 90% of the model's stopping distance ...
+STOP_MARGIN = 4.5  # ... minus this many metres: converges ~5 m short of the model's stop. Drive video (night, faint
+                   # line) showed the model's stop point 3-5 m too far: the car stopped on the crosswalk.
 MIN_TARGET_DIST = 0.5  # m
 MIN_SPEED = 1.0  # m/s: below this the normal stopping logic finishes the stop
 ENGAGE_DECEL = -0.6  # m/s2: only step in once the required decel is at least this firm (avoid early creeping brakes)
 A_MIN = -3.0  # m/s2: firmest the assist will ask for (car limit is -3.5)
+# ...and less near the end of the stop, so the extra braking happens early rather than as a jab at walking pace
+A_MIN_BP_V = [2.0, 4.0, 8.0]  # m/s
+A_MIN_V = [-1.8, -2.2, A_MIN]  # m/s2
 JERK = 2.5  # m/s3: how fast the extra braking may build
 RELEASE_JERK = 4.0  # m/s3: how fast it may let go
 LEAD_CLEARANCE = 5.0  # m: a lead within stop point + this means the stop is for the lead, not a line
@@ -59,7 +63,7 @@ class StopLineAssist:
     a_req = -v_ego * v_ego / (2.0 * target)
     if a_req > ENGAGE_DECEL:
       return None
-    return max(a_req, A_MIN)
+    return max(a_req, float(np.interp(v_ego, A_MIN_BP_V, A_MIN_V)))
 
   def update(self, sm, v_ego: float, a_e2e: float) -> float:
     """Returns the e2e acceleration with the assist applied (never higher than a_e2e)."""
