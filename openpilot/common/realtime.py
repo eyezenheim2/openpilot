@@ -22,6 +22,9 @@ class Priority:
   # - modeld = 55
   # - camerad = 54
   CTRL_LOW = 51 # plannerd & radard
+  # UI shares core 5 with plannerd & radard and must never hold them off: the onroad top view can use most of
+  # that core, and at a higher priority it delayed radarState into commIssue / "Take control immediately".
+  UI = 50
 
   # CORE 3
   # - pandad = 55
