@@ -151,9 +151,16 @@ class StopLineAssist:
     target = max(MIN_TARGET_DIST, STOP_FRACTION * stop_x - STOP_MARGIN)
     if -v_ego * v_ego / (2.0 * target) > ENGAGE_DECEL:
       return None
-    a_margin = max(_sign_decel(v_ego, target), -LIGHT_COMFORT_DECEL)  # aim short of the model, comfortably
+    comfort = min(LIGHT_COMFORT_DECEL, _tail_a(v_ego))  # eases off in the last ~7 mph like the stop-sign tail
+    a_margin = max(_sign_decel(v_ego, target), -comfort)  # aim short of the model, comfortably
     a_bound = _sign_decel(v_ego, stop_x - LIGHT_HARD_GAP)  # but always stop before the model's own stop point
-    return min(a_margin, a_bound)
+    a = min(a_margin, a_bound)
+    if v_ego <= TAIL_V:
+      # last ~7 mph: the model's stop point jumps around at walking pace (log 0000021b/6: "1.5 m ahead" at 3 mph while
+      # the model itself braked 0.9 m/s2 and stopped fine), so chasing it gave a 1.8 m/s2 jab at the end. Cap at the
+      # gentle tail; the output is still min(model, assist), so we never stop later than the model would.
+      a = max(a, -_tail_a(v_ego))
+    return a
 
   def _rolling_stop_dist(self, sm, v_ego: float, v, x) -> float | None:
     """Distance to stop at if the model is planning a rolling stop (stop sign), else None."""
