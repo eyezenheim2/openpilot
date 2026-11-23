@@ -16,6 +16,7 @@ depth buffer, so it uses exactly the same GL path as the rest of the HUD.
 World frame: X = right, Y = up, Z = backwards (forward is -Z). Model frame: x forward, y right.
 """
 import math
+import random
 
 import numpy as np
 import pyray as rl
@@ -34,8 +35,20 @@ PATH = (40, 182, 154)  # sim's teal path
 PATH_ALPHA = 0.38
 
 EGO_PAINT = (246, 248, 247)  # sim default: pearl white
-LEAD_PAINT = (246, 248, 247)  # other cars in white too, so they stand out on the dark road
-TRAFFIC_PAINT = [(246, 248, 247)]
+# other cars: real-world paint colours, weighted like a typical road (lots of white/silver/grey), all kept light
+# enough to read on the dark road (no true black). Each new car gets one, plus a body style, for as long as it's tracked.
+TRAFFIC_PAINTS = [  # (rgb, weight)
+  ((246, 248, 247), 4),  # white
+  ((196, 202, 208), 4),  # silver
+  ((132, 142, 152), 3),  # grey
+  ((196, 36, 44), 2),    # red
+  ((46, 96, 196), 2),    # blue
+  ((122, 168, 214), 1),  # light blue
+  ((206, 190, 158), 1),  # champagne
+  ((62, 128, 88), 1),    # green
+  ((228, 122, 40), 1),   # orange
+]
+BODY_STYLES = [('sedan', 3), ('suv', 3), ('hatch', 2)]  # (body, weight)
 HALO = (190, 210, 235)  # soft light pool under other cars
 DISPLAY_DIST_SCALE = 0.5  # other cars are drawn at this fraction of their real gap to us, so they sit where they can be seen
 MIN_DISPLAY_GAP = 1.0  # m of drawn gap kept between our bumper and the nearest car
@@ -50,7 +63,8 @@ FOG_NEAR, FOG_FAR = 30.0, 95.0
 FOG_BANDS = 10  # fog is stepped so long ribbons go out in a few draw calls
 BEHIND = 12.0  # m of road drawn behind us (the virtual camera sits further back than this)
 EGO_CENTER_X = -1.2  # the camera sits near the windshield, the car's centre is behind it
-CAR_LEN = 4.65
+CAR_LEN = 4.65  # our car (sedan)
+BODY_LEN = {'sedan': 4.65, 'suv': 4.75, 'hatch': 4.25}
 LEAD_MIN_PROB = 0.5
 NEAR = 0.5  # m: anything closer to the virtual camera is skipped
 RADAR_TO_CAMERA = 1.52  # m, object distances are from the front bumper, model distances from the camera
@@ -134,7 +148,8 @@ class TopView:
   def __init__(self):
     self._odometer = 0.0
     self._cam: _Camera | None = None
-    self._car_template = self._build_car_template()
+    self._bodies = {b: self._build_car_template(b) for b in BODY_LEN}
+    self._rng = random.Random()
 
     self._path = np.zeros((0, 2), dtype=np.float32)
     self._lanes = [np.zeros((0, 2), dtype=np.float32) for _ in range(4)]
@@ -146,6 +161,8 @@ class TopView:
     self._lead_x = FirstOrderFilter(0.0, 0.15, dt, initialized=False)
     self._lead_y = FirstOrderFilter(0.0, 0.15, dt, initialized=False)
     self._lead_alpha = FirstOrderFilter(0.0, 0.15, dt)
+    self._lead_look = self._new_look()  # (paint, body) of the camera lead, re-picked when it becomes a different car
+    self._lead_born = 0.0
     self._camera_offset = 0.0
     self._counter = 0
     self._objects: dict[int, dict] = {}  # id -> {'x', 'y' filters, 'alpha' filter, 'seen' time}
@@ -182,8 +199,10 @@ class TopView:
     visible = lead is not None and lead.prob > LEAD_MIN_PROB and len(lead.x) > 0 and 0.0 < lead.x[0] < 120.0
     if visible:
       x, y = float(lead.x[0]), float(lead.y[0]) + self._camera_offset
-      if abs(y - self._lead_y.x) > 3.0 or abs(x - self._lead_x.x) > 15.0:
+      if not self._lead_x.initialized or self._lead_alpha.x < 0.02 or abs(y - self._lead_y.x) > 3.0 or abs(x - self._lead_x.x) > 15.0:
         self._lead_x.initialized = self._lead_y.initialized = False  # a different car: snap, don't slide
+        self._lead_look = self._new_look()
+        self._lead_born = rl.get_time()
       self._lead_x.update(x)
       self._lead_y.update(y)
     self._lead_alpha.update(1.0 if visible else 0.0)
@@ -204,7 +223,8 @@ class TopView:
         x, y = float(r['dist']) + RADAR_TO_CAMERA, -float(r['lat'])  # model frame: y right-positive
         o = self._objects.get(oid)
         if o is None or abs(o['x'].x - x) > 10.0 or abs(o['y'].x - y) > 3.0:
-          o = {'x': FirstOrderFilter(x, 0.1, dt), 'y': FirstOrderFilter(y, 0.1, dt), 'alpha': FirstOrderFilter(0.0, 0.15, dt)}
+          o = {'x': FirstOrderFilter(x, 0.1, dt), 'y': FirstOrderFilter(y, 0.1, dt), 'alpha': FirstOrderFilter(0.0, 0.15, dt),
+               'look': self._new_look(), 'born': now}
           self._objects[oid] = o
         o['x'].update(x)
         o['y'].update(y)
@@ -215,6 +235,16 @@ class TopView:
       o['alpha'].update(1.0 if now - o['seen'] < OBJ_TIMEOUT else 0.0)
       if now - o['seen'] > OBJ_TIMEOUT and o['alpha'].x < 0.02:
         del self._objects[oid]
+
+  def _new_look(self) -> tuple:
+    """Random (paint, body) for a newly seen car, avoiding the colours already on screen when there's a choice."""
+    in_use = {o['look'][0] for o in getattr(self, '_objects', {}).values() if o['alpha'].x > 0.02}
+    if getattr(self, '_lead_alpha', None) is not None and self._lead_alpha.x > 0.02:
+      in_use.add(self._lead_look[0])
+    paints = [(c, w) for c, w in TRAFFIC_PAINTS if c not in in_use] or TRAFFIC_PAINTS
+    paint = self._rng.choices([c for c, _ in paints], [w for _, w in paints])[0]
+    body = self._rng.choices([b for b, _ in BODY_STYLES], [w for _, w in BODY_STYLES])[0]
+    return paint, body
 
   # ---------------------------------------------------------------- helpers
   @staticmethod
@@ -267,8 +297,9 @@ class TopView:
     self._strip(xs, ys - half, ys + half, rgb, a, dash)
 
   @staticmethod
-  def _build_car_template():
+  def _build_car_template(body: str = 'sedan'):
     """Low-poly car after the sim's buildCar, in local coords around the car's centre (world axes).
+    body: 'sedan' (the sim's car, also ours), 'suv' (taller, boxy, near-vertical tailgate) or 'hatch' (short, no trunk).
     Returns quads (F,4,3), outward normals (F,3) and colour keys ('paint', 'brake' or an rgb)."""
     quads, normals, keys = [], [], []
 
@@ -285,21 +316,50 @@ class TopView:
         normals.append(n)
         keys.append(key)
 
-    box(0, 0.38, 0, 1.79, 0.16, 4.4, UNDER)
-    box(0, 0.57, 0, 1.88, 0.62, 4.65, 'paint')
-    box(0, 0.85, 1.52, 1.72, 0.2, 1.35, 'paint')
-    for z in (1.45, -1.48):
+    if body == 'suv':
+      box(0, 0.42, 0, 1.84, 0.18, 4.5, UNDER)
+      box(0, 0.74, 0, 1.92, 0.78, 4.75, 'paint')
+      box(0, 1.17, 1.66, 1.8, 0.1, 1.3, 'paint')  # hood
+      for z in (1.5, -1.55):
+        for s in (-1, 1):
+          box(s * 0.93, 0.39, z, 0.26, 0.78, 0.78, TIRE)
       for s in (-1, 1):
-        box(s * 0.91, 0.36, z, 0.24, 0.7, 0.7, TIRE)
-    for s in (-1, 1):
-      box(s * 0.73, 1.49, -0.13, 0.07, 0.08, 1.45, 'paint')  # roof rails
-      box(s * 1.02, 1.0, 0.78, 0.28, 0.14, 0.35, 'paint')  # mirrors
-      box(s * 0.63, 0.77, -2.26, 0.57, 0.11, 0.05, 'brake')  # tail lights
-    box(0, 1.45, -1.35, 0.44, 0.045, 0.05, 'brake')  # CHMSL
+        box(s * 0.78, 1.86, -0.7, 0.07, 0.08, 2.4, 'paint')  # roof rails
+        box(s * 1.05, 1.25, 0.82, 0.28, 0.16, 0.35, 'paint')  # mirrors
+        box(s * 0.8, 1.0, -2.36, 0.24, 0.3, 0.05, 'brake')  # tail lights, up the tailgate corners
+      box(0, 1.76, -2.2, 0.44, 0.045, 0.05, 'brake')  # CHMSL
+      profile = [(-2.25, 1.12), (-2.12, 1.8), (0.72, 1.82), (1.32, 1.14)]  # near-vertical tailgate, long flat roof
+      half = 0.84
+    elif body == 'hatch':
+      box(0, 0.36, 0, 1.72, 0.15, 4.0, UNDER)
+      box(0, 0.56, 0, 1.8, 0.6, 4.25, 'paint')
+      box(0, 0.83, 1.4, 1.66, 0.18, 1.15, 'paint')  # hood
+      for z in (1.32, -1.32):
+        for s in (-1, 1):
+          box(s * 0.87, 0.33, z, 0.22, 0.64, 0.64, TIRE)
+      for s in (-1, 1):
+        box(s * 0.98, 0.98, 0.62, 0.26, 0.13, 0.32, 'paint')  # mirrors
+        box(s * 0.68, 0.84, -2.1, 0.32, 0.16, 0.05, 'brake')  # tail lights
+      box(0, 1.4, -1.86, 0.4, 0.045, 0.05, 'brake')  # CHMSL
+      profile = [(-1.95, 0.86), (-1.78, 1.42), (0.42, 1.45), (1.12, 0.84)]  # roof runs almost to the back
+      half = 0.74
+    else:
+      box(0, 0.38, 0, 1.79, 0.16, 4.4, UNDER)
+      box(0, 0.57, 0, 1.88, 0.62, 4.65, 'paint')
+      box(0, 0.85, 1.52, 1.72, 0.2, 1.35, 'paint')
+      for z in (1.45, -1.48):
+        for s in (-1, 1):
+          box(s * 0.91, 0.36, z, 0.24, 0.7, 0.7, TIRE)
+      for s in (-1, 1):
+        box(s * 0.73, 1.49, -0.13, 0.07, 0.08, 1.45, 'paint')  # roof rails
+        box(s * 1.02, 1.0, 0.78, 0.28, 0.14, 0.35, 'paint')  # mirrors
+        box(s * 0.63, 0.77, -2.26, 0.57, 0.11, 0.05, 'brake')  # tail lights
+      box(0, 1.45, -1.35, 0.44, 0.045, 0.05, 'brake')  # CHMSL
+      profile = [(-1.45, 0.8), (-0.9, 1.42), (0.67, 1.43), (1.33, 0.82)]
+      half = 0.775
 
     # glass cabin: sloped rear glass, curved roof, windshield, two sides (a convex prism)
-    profile = [(-1.45, 0.8), (-0.9, 1.42), (0.67, 1.43), (1.33, 0.82)]  # (sim z forward, height)
-    half = 0.775
+    # profile: (sim z forward, height), half: half-width
     Lp = [np.array([-half, h, -z]) for z, h in profile]
     Rp = [np.array([half, h, -z]) for z, h in profile]
     centre = np.mean(Lp + Rp, axis=0)
@@ -318,9 +378,9 @@ class TopView:
     shade = 0.55 + 0.45 * np.clip(normals @ LIGHT, 0.0, 1.0)
     return np.array(quads, dtype=np.float64), normals, keys, shade
 
-  def _draw_car(self, x_center: float, y: float, paint, alpha: float, brake: bool, scale: float = 1.0):
+  def _draw_car(self, x_center: float, y: float, paint, alpha: float, brake: bool, scale: float = 1.0, body: str = 'sedan'):
     """Translate the template, drop faces turned away from the camera, paint the rest far to near."""
-    quads, normals, keys, shade = self._car_template
+    quads, normals, keys, shade = self._bodies[body]
     pts = quads * scale + _wp(x_center, y)
     centres = pts.mean(axis=1)
     to_eye = self._cam.eye - centres
@@ -456,19 +516,22 @@ class TopView:
 
     # cars to draw: tracked cars from the car's sensors, plus the camera lead unless one of them is that car
     lead_a = self._lead_alpha.x if self._lead_x.initialized else 0.0
-    cars = []  # (x_rear, y, paint, alpha)
+    cars = []  # (x_rear, y, (paint, body), alpha)
     lead_matched = False
-    for oid, o in self._objects.items():
+    for o in self._objects.values():
       x, y, a = o['x'].x, o['y'].x, o['alpha'].x
       if a < 0.02 or x < EGO_CENTER_X + CAR_LEN:
         continue
       if lead_a > 0.3 and abs(x - self._lead_x.x) < LEAD_MATCH_X and abs(y - self._lead_y.x) < LEAD_MATCH_Y:
+        # same car seen by camera and sensors: keep whichever look it showed first, so it doesn't change when they pair up
+        if o['born'] <= self._lead_born:
+          self._lead_look = o['look']
+        else:
+          o['look'] = self._lead_look
         lead_matched = True
-        cars.append((x, y, LEAD_PAINT, a))
-      else:
-        cars.append((x, y, TRAFFIC_PAINT[oid % len(TRAFFIC_PAINT)], a))
+      cars.append((x, y, o['look'], a))
     if lead_a > 0.02 and not lead_matched:
-      cars.append((self._lead_x.x, self._lead_y.x, LEAD_PAINT, lead_a))
+      cars.append((self._lead_x.x, self._lead_y.x, self._lead_look, lead_a))
 
     # draw other cars closer than they are (DISPLAY_DIST_SCALE of the real gap), keeping their lane:
     # their offset from our path is preserved, so on curves they stay on the road
@@ -481,7 +544,7 @@ class TopView:
         y += float(np.interp(x_d, path[:, 0], path[:, 1]) - np.interp(x, path[:, 0], path[:, 1]))
       return x_d, y
 
-    cars = [(*to_display(x, y), paint, a) for x, y, paint, a in cars]
+    cars = [(*to_display(x, y), look, a) for x, y, look, a in cars]
     # the path stops at the nearest drawn car in our lane, whether the camera or the car's sensors reported it
     in_lane = [x for x, y, _, a in cars if a > 0.5 and path.shape[0] >= 2 and abs(y - float(np.interp(x, path[:, 0], path[:, 1]))) < IN_LANE_Y]
     lead_disp_x = min(in_lane) if in_lane else None
@@ -497,13 +560,13 @@ class TopView:
     cc = sm['carControl']
     braking = sm['carState'].brakePressed or (cc.longActive and cc.actuators.accel < -0.5)
     y0 = float(np.interp(0.0, path[:, 0], path[:, 1])) if path.shape[0] >= 2 else 0.0
-    for x, y, paint, a in sorted(cars, key=lambda c: -c[0]):  # far to near so nearer cars overlap correctly
+    for x, y, (paint, body), a in sorted(cars, key=lambda c: -c[0]):  # far to near so nearer cars overlap correctly
       near, far, most = FAR_BOOST
       k = 1.0 + (most - 1.0) * min(1.0, max(0.0, (x - near) / (far - near)))
-      cx = x + CAR_LEN * k / 2  # keep the rear bumper where the sensors put it
+      cx = x + BODY_LEN[body] * k / 2  # keep the rear bumper where the sensors put it
       self._halo(cx, y, a, k)
       self._shadow(cx, y, a, k)
-      self._draw_car(cx, y, paint, a, False, k)
+      self._draw_car(cx, y, paint, a, False, k, body)
     self._shadow(EGO_CENTER_X, y0, 1.0)
     sign_a = self._stop_sign_alpha.x
     if sign_a > 0.02:
