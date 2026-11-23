@@ -1,6 +1,8 @@
 import math
 import time
 
+import numpy as np
+
 from openpilot.cereal import log
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
@@ -29,10 +31,44 @@ PLANTED_RATE_FILTER_RC = 0.1  # s, smooths the desired-angle rate used by the da
 PLANTED_WHEEL_RATE_FILTER_RC = 0.15  # s, smooths the measured wheel rate used by the damping term
 PARAM_POLL_INTERVAL = 1.0  # s
 
+# "Hands on the wheel" wobble gate. At low speed the model's request wiggles +-2-4 deg at under 1 Hz,
+# and the Honda torque ramp (0 -> full in 0.33 s) can't reverse the wheel fast enough to follow it,
+# so the wheel ends up late, overshoots, the model steers against the swing, and it wobbles.
+# On a straight, low-speed road the gate holds the wheel at the request's ~1 s average and
+# ignores wiggle inside a deadband. Anything bigger (a real correction, a turn starting) passes
+# through, minus the deadband, while the average catches up. The gate fades out with speed and
+# as soon as the average says the road is bending. steeringAngleDesiredDeg still logs the raw request;
+# angleError is measured against the gated + smoothed target. Replayed on routes 593a234151 seg 18 and
+# 162eed8477 seg 3: model wiggle in the wobble stretches +-3.0-3.8 -> +-1.1-1.4 deg, path vs the
+# model's within 3 cm over any 2 s, gate mostly off through the tight turns.
+GATE_SPEED_BP = [6.7, 9.0]  # m/s (15, 20 mph): full gate below, none above
+GATE_STRAIGHT_BP = [5., 10.]  # deg, |average request|: full gate below, none above
+GATE_DEADBAND = 3.0  # deg of steering wheel ignored around the average
+GATE_AVG_RC = 1.0  # s, averaging time for the "where the road actually goes" estimate
+GATE_WEIGHT_RC = 0.3  # s, smooths gate engage/release
+
 
 def _scale_gain(gain, scale):
   bp, v = gain
   return list(bp), [x * scale for x in v]
+
+
+class WobbleGate:
+  def __init__(self, dt):
+    self.avg = FirstOrderFilter(0.0, GATE_AVG_RC, dt, initialized=False)
+    self.weight = FirstOrderFilter(0.0, GATE_WEIGHT_RC, dt)
+
+  def reset(self):
+    self.avg.initialized = False
+    self.weight.x = 0.0
+
+  def update(self, request, v_ego):
+    avg = self.avg.update(request)
+    dev = request - avg
+    target = float(np.interp(v_ego, GATE_SPEED_BP, [1., 0.]) * np.interp(abs(avg), GATE_STRAIGHT_BP, [1., 0.]))
+    w = self.weight.update(target)
+    gated = avg + math.copysign(max(abs(dev) - GATE_DEADBAND, 0.), dev)
+    return w * gated + (1. - w) * request, w
 
 
 class LatControlPID(LatControl):
@@ -53,9 +89,11 @@ class LatControlPID(LatControl):
     self._desired_rate = FirstOrderFilter(0.0, PLANTED_RATE_FILTER_RC, dt)
     self._wheel_rate = FirstOrderFilter(0.0, PLANTED_WHEEL_RATE_FILTER_RC, dt, initialized=False)
     self._last_angle_des: float | None = None
+    self._wobble_gate = WobbleGate(dt)
     self._update_planted()
 
   def _reset_planted_filters(self):
+    self._wobble_gate.reset()
     self._desired_angle.initialized = False
     self._wheel_rate.initialized = False
     self._desired_rate.x = 0.0
@@ -101,7 +139,8 @@ class LatControlPID(LatControl):
       self._reset_planted_filters()
 
     if self.planted and active and PLANTED_DESIRED_FILTER_RC > 0.:
-      angle_steers_des_no_offset = self._desired_angle.update(angle_request_no_offset)
+      gated_request, _ = self._wobble_gate.update(angle_request_no_offset, CS.vEgo)
+      angle_steers_des_no_offset = self._desired_angle.update(gated_request)
     else:
       angle_steers_des_no_offset = angle_request_no_offset
     angle_steers_des = angle_steers_des_no_offset + params.angleOffsetDeg
