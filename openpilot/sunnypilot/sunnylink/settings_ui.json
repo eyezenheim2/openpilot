@@ -2063,10 +2063,10 @@
               "description": "When Experimental Mode is stopping for a light or stop line (no car ahead), aim the stop a few metres before the model's stopping point and brake firmer if needed (up to 3 m/s2, smoothly). Only ever adds braking."
             },
             {
-              "key": "StopSignFullStop",
+              "key": "CaliforniaStop",
               "widget": "toggle",
-              "title": "Full Stop at Stop Signs",
-              "description": "The model rolls through stop signs (slows to ~5 mph). With this on, a planned rolling stop with no car ahead becomes a full stop a few metres before the line, held ~1 s, then the model drives on. May also stop fully where the model slows below ~6 mph for something else. Needs Stop-Line Assist."
+              "title": "California Stop",
+              "description": "On: at stop signs the car does the model's rolling stop (slows to ~5 mph and goes). Off (default): when the car's own camera recognises a stop sign, the car makes a full stop a few metres before the line, holds ~1 s, then the model drives on. Needs Stop-Line Assist."
             }
           ]
         },

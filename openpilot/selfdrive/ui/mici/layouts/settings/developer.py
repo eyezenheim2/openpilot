@@ -104,9 +104,9 @@ class DeveloperLayoutMici(NavScroller):
     self._stop_line_assist_toggle = BigParamControl("stop-line assist", "StopLineAssist",
                                                     description="Experimental Mode: stop a few metres earlier for red lights " +
                                                                 "and stop lines, braking firmer if needed. Only adds braking.")
-    self._stop_sign_toggle = BigParamControl("full stop at stop signs", "StopSignFullStop",
-                                             description="Experimental Mode: turn the model's rolling stop into a full stop " +
-                                                         "a few metres before the line, then drive on. Needs stop-line assist.")
+    self._stop_sign_toggle = BigParamControl("california stop", "CaliforniaStop",
+                                             description="On: the model's rolling stop at stop signs. Off (default): a full stop " +
+                                                         "a few metres before the line when the car's camera recognises the sign.")
     self._lane_centering_toggle = BigParamControl("SPLC (StarPilot Lane Centering)", "LaneCentering",
                                                   toggle_callback=self._update_lane_centering_settings_enabled,
                                                   description="Experimentally bias the model command toward the detected lane center. Requires two " +
@@ -161,7 +161,7 @@ class DeveloperLayoutMici(NavScroller):
       ("LaneCentering", self._lane_centering_toggle),
       ("PlantedSteering", self._planted_steering_toggle),
       ("StopLineAssist", self._stop_line_assist_toggle),
-      ("StopSignFullStop", self._stop_sign_toggle),
+      ("CaliforniaStop", self._stop_sign_toggle),
     )
     onroad_blocked_toggles = (self._adb_toggle, self._joystick_toggle)
     release_blocked_toggles = (self._joystick_toggle, self._long_maneuver_toggle, self._lat_maneuver_toggle, self._alpha_long_toggle, self._navigation_toggle)

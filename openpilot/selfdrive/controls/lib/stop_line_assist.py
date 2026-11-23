@@ -7,7 +7,7 @@ This aims ~5 m short of the model's stopping point and, at stop signs, turns the
 
 Two triggers, both only with no lead car at or before the stop:
   - full stop: the model's planned speed reaches ~0 within its horizon (lights, lines)
-  - rolling stop (StopSignFullStop): the model plans to slow below ROLL_V close ahead while we are at moderate speed,
+  - rolling stop (unless CaliforniaStop is on): the model plans to slow below ROLL_V close ahead while we are at moderate speed,
     AND the car's own Traffic Sign Recognition reported a stop sign within SIGN_MEMORY (fresh messages only).
     Without that confirmation (other cars, decoder not running, stale data) no stop-sign stop happens.
     Once committed, the stop point is latched by odometry and held until standstill + HOLD_TIME, because the
@@ -65,7 +65,7 @@ class StopLineAssist:
     self.dt = dt
     self.params = Params()
     self.enabled = self.params.get_bool("StopLineAssist")
-    self.sign_enabled = self.params.get_bool("StopSignFullStop")
+    self.sign_enabled = not self.params.get_bool("CaliforniaStop")
     self.counter = 0
     self.failed = False  # any unexpected error switches the assist off for the drive; planning continues untouched
 
@@ -184,7 +184,7 @@ class StopLineAssist:
     """Returns the e2e acceleration with the assist applied (never higher than a_e2e)."""
     if self.counter % 50 == 0:
       self.enabled = self.params.get_bool("StopLineAssist")
-      self.sign_enabled = self.params.get_bool("StopSignFullStop")
+      self.sign_enabled = not self.params.get_bool("CaliforniaStop")
     self.counter += 1
     self.t += self.dt
     self.odo += max(v_ego, 0.0) * self.dt
