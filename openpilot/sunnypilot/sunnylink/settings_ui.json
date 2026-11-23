@@ -1551,10 +1551,24 @@
               "description": "Display a rainbow effect on the path the model wants to take. It does not affect driving in any way."
             },
             {
-              "key": "LeadCarView",
-              "widget": "toggle",
-              "title": "Onroad View: GTA",
-              "description": "Off = normal view (camera, lane lines and path). On = GTA view: GTA VI-style color grade on the live camera with your car, the lead car, and a blue path between them. Visual only; it does not affect driving in any way."
+              "key": "OnroadStyle",
+              "widget": "multiple_button",
+              "title": "Onroad View",
+              "description": "Normal: camera with lane lines and path. GTA: GTA VI-style color grade with your car, the lead car and a blue path. Top View: bird's-eye 3D scene built from what the camera sees (road, lanes, path, lead car). Visual only; it does not affect driving in any way.",
+              "options": [
+                {
+                  "value": 0,
+                  "label": "Normal"
+                },
+                {
+                  "value": 1,
+                  "label": "GTA"
+                },
+                {
+                  "value": 2,
+                  "label": "Top View"
+                }
+              ]
             }
           ]
         }

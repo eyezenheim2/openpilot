@@ -1,7 +1,8 @@
 from collections.abc import Callable
 from openpilot.common.time_helpers import system_time_valid
 from openpilot.system.ui.widgets.scroller import NavScroller
-from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigToggle, BigMultiToggle, BigParamControl, BigCircleParamControl, GreyBigButton
+from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigToggle, BigMultiToggle, BigMultiParamToggle, BigParamControl, \
+  BigCircleParamControl, GreyBigButton
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigDialog, BigInputDialog, BigConfirmationCircleButton
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.settings.common import (LANE_CENTER_OFFSET_LABELS, LANE_CENTER_OFFSET_VALUES,
@@ -9,6 +10,8 @@ from openpilot.selfdrive.ui.layouts.settings.common import (LANE_CENTER_OFFSET_L
                                                             closest_value_index, restart_needed_callback)
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.ui.widgets.ssh_key import SshKeyFetcher
+
+ONROAD_STYLE_LABELS = ("normal", "gta", "top view")  # OnroadStyle param: 0, 1, 2
 
 
 class AlphaLongConfirmPage(NavScroller):
@@ -94,9 +97,10 @@ class DeveloperLayoutMici(NavScroller):
                                                     description="Firmer, less floaty steering: stronger curve feedforward, " +
                                                                 "tighter lane hold, and damping against weave. Applies " +
                                                                 "within about a second.")
-    self._lead_car_view_toggle = BigParamControl("gta view", "LeadCarView",
-                                                  description="GTA VI-style color grade on the live camera, with your car, " +
-                                                              "the lead car, and a blue path between them, in place of lane lines.")
+    self._onroad_style_toggle = BigMultiParamToggle("onroad view", "OnroadStyle", list(ONROAD_STYLE_LABELS),
+                                                    description="normal: camera with lane lines and path.\n" +
+                                                                "gta: GTA VI-style color grade with your car, the lead and a blue path.\n" +
+                                                                "top view: bird's-eye 3D scene built from what the camera sees.")
     self._lane_centering_toggle = BigParamControl("SPLC (StarPilot Lane Centering)", "LaneCentering",
                                                   toggle_callback=self._update_lane_centering_settings_enabled,
                                                   description="Experimentally bias the model command toward the detected lane center. Requires two " +
@@ -128,7 +132,7 @@ class DeveloperLayoutMici(NavScroller):
       self._alpha_long_toggle,
       self._debug_mode_toggle,
       self._navigation_toggle,
-      self._lead_car_view_toggle,
+      self._onroad_style_toggle,
       self._planted_steering_toggle,
       self._lane_centering_toggle,
       self._lane_centering_pause_toggle,
@@ -148,7 +152,6 @@ class DeveloperLayoutMici(NavScroller):
       ("NavigationEnabled", self._navigation_toggle),
       ("LaneCentering", self._lane_centering_toggle),
       ("PlantedSteering", self._planted_steering_toggle),
-      ("LeadCarView", self._lead_car_view_toggle),
     )
     onroad_blocked_toggles = (self._adb_toggle, self._joystick_toggle)
     release_blocked_toggles = (self._joystick_toggle, self._long_maneuver_toggle, self._lat_maneuver_toggle, self._alpha_long_toggle, self._navigation_toggle)
@@ -202,6 +205,9 @@ class DeveloperLayoutMici(NavScroller):
       self._alpha_long_toggle.set_visible(False)
 
     # Refresh toggles from params to mirror external changes
+    style = int(ui_state.params.get("OnroadStyle", return_default=True) or 0)
+    if 0 <= style < len(ONROAD_STYLE_LABELS):
+      self._onroad_style_toggle.set_value(ONROAD_STYLE_LABELS[style])
     for key, item in self._refresh_toggles:
       item.set_checked(ui_state.params.get_bool(key))
 

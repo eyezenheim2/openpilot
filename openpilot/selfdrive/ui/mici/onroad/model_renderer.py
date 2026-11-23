@@ -140,7 +140,7 @@ class ModelRenderer(Widget, ModelRendererSP):
       self._transform_dirty = False
 
     # Tesla-style cartoon view: only our car, the lead car and the blue path
-    if ui_state.lead_car_view:
+    if ui_state.onroad_style == 1:
       if radar_state is not None:
         self._update_leads(sm)
       else:

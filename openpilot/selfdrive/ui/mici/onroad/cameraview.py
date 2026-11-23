@@ -436,7 +436,7 @@ class CameraView(Widget):
     rl.set_shader_value(self.shader, self._enhance_driver_loc, self._enhance_driver_val, rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
 
     # GTA-style grade on the road cameras when the stylized view is on (never the driver camera)
-    cartoon = self._stream_type != VisionStreamType.VISION_STREAM_CABIN and getattr(ui_state, "lead_car_view", False)
+    cartoon = self._stream_type != VisionStreamType.VISION_STREAM_CABIN and getattr(ui_state, "onroad_style", 0) == 1
     self._cartoon_val[0] = 1 if cartoon else 0
     rl.set_shader_value(self.shader, self._cartoon_loc, self._cartoon_val, rl.ShaderUniformDataType.SHADER_UNIFORM_INT)
     if cartoon:

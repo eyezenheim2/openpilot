@@ -15,6 +15,7 @@ from openpilot.selfdrive.ui.mici.onroad.driver_state import DriverStateRenderer
 from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.mici.onroad.long_indicator import LongIndicator
 from openpilot.selfdrive.ui.mici.onroad.model_renderer import ModelRenderer
+from openpilot.selfdrive.ui.mici.onroad.top_view import TopView
 from openpilot.selfdrive.ui.mici.onroad.navigation import NavigationPanel, PANEL_WIDTH
 from openpilot.selfdrive.ui.mici.onroad.confidence_ball import ConfidenceBall
 from openpilot.selfdrive.ui.mici.onroad.cameraview import CameraView
@@ -197,6 +198,7 @@ class AugmentedRoadView(CameraView):
 
     self._navigation = NavigationPanel()
     self._model_renderer = ModelRenderer()
+    self._top_view = TopView()
     self._hud_renderer = HudRenderer()
     self._long_indicator = LongIndicator()
     self._alert_renderer = AlertRenderer()
@@ -324,6 +326,11 @@ class AugmentedRoadView(CameraView):
       self.rect.height,
     )
 
+    # Top view renders its 3D scene offscreen first: render textures don't mix with an active scissor
+    top_view = ui_state.onroad_style == 2
+    if top_view:
+      self._top_view.prepare(self._content_rect)
+
     # Enable scissor mode to clip all rendering within content rectangle boundaries
     # This creates a rendering viewport that prevents graphics from drawing outside the border
     rl.begin_scissor_mode(
@@ -333,15 +340,19 @@ class AugmentedRoadView(CameraView):
       int(self._content_rect.height)
     )
 
-    # Render the base camera view
-    super()._render(self._content_rect)
+    if top_view:
+      # bird's-eye scene built from the model (road, lanes, path, camera-detected lead)
+      self._top_view.draw(self._content_rect)
+    else:
+      # Render the base camera view
+      super()._render(self._content_rect)
 
-    # the cartoon lead-car view sits on the live camera, so don't black it out
-    if not ui_state.lead_car_view:
-      self._draw_hud_backing(self._content_rect)
+      # the GTA view sits on the live camera, so don't black it out
+      if ui_state.onroad_style != 1:
+        self._draw_hud_backing(self._content_rect)
 
-    # Draw all UI overlays
-    self._model_renderer.render(self._content_rect)
+      # Draw all UI overlays
+      self._model_renderer.render(self._content_rect)
 
     # Fade out bottom of overlays for looks
     rl.draw_texture_ex(self._fade_texture, rl.Vector2(self._content_rect.x, self._content_rect.y), 0.0, 1.0, rl.WHITE)
