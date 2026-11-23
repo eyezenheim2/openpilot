@@ -13,6 +13,8 @@ Two triggers, both only with no lead car at or before the stop:
     Once committed, the stop point is latched by odometry and held until standstill + HOLD_TIME, because the
     model plans to accelerate through and would otherwise pull the car along. The braking tapers off over the last
     ~7 mph (TAIL_V) so the stop settles gently instead of ending with a dip-and-rebound.
+Full stops (lights) use the same tapered profile, aiming STOP_MARGIN short of the model's stop only up to a comfortable
+decel (see LIGHT_COMFORT_DECEL) and never letting the car reach the model's own stop point.
 
 Only ever adds braking, never throttle: the output is min(model accel, assist command). The assist command is capped
 (speed-dependent, -3.0 m/s2 at speed easing to -1.8 near standstill) and jerk-limited. Gas, a lead appearing before the
@@ -30,6 +32,12 @@ STOP_MARGIN = 4.5  # ... minus this many metres: converges ~5 m short of the mod
 MIN_TARGET_DIST = 0.3  # m
 MIN_SPEED = 1.0  # m/s: below this the normal stopping logic finishes a full-stop plan
 ENGAGE_DECEL = -0.6  # m/s2: full-stop trigger only steps in once the required decel is at least this firm
+# Lights: the model's stop point often keeps moving ahead as we approach (drive log: still 8 m out at 9 mph, 4 m at
+# 7 mph), so aiming a fixed STOP_MARGIN short of it chased a receding target and braked up to -2.2 m/s2 near the line.
+# The margin is now only pursued up to LIGHT_COMFORT_DECEL; beyond that we only brake as hard as needed to stop
+# LIGHT_HARD_GAP before the model's own stop point (the model would stop there anyway).
+LIGHT_COMFORT_DECEL = 1.6  # m/s2
+LIGHT_HARD_GAP = 1.0  # m
 
 # rolling stops (stop signs): the model slows below ROLL_V close ahead and drives on
 ROLL_V = 2.6  # m/s: planned minimum speed that counts as a rolling stop
@@ -141,10 +149,11 @@ class StopLineAssist:
     if self._lead_before(sm, stop_x):
       return None
     target = max(MIN_TARGET_DIST, STOP_FRACTION * stop_x - STOP_MARGIN)
-    a_req = -v_ego * v_ego / (2.0 * target)
-    if a_req > ENGAGE_DECEL:
+    if -v_ego * v_ego / (2.0 * target) > ENGAGE_DECEL:
       return None
-    return max(a_req, _floor(v_ego))
+    a_margin = max(_sign_decel(v_ego, target), -LIGHT_COMFORT_DECEL)  # aim short of the model, comfortably
+    a_bound = _sign_decel(v_ego, stop_x - LIGHT_HARD_GAP)  # but always stop before the model's own stop point
+    return min(a_margin, a_bound)
 
   def _rolling_stop_dist(self, sm, v_ego: float, v, x) -> float | None:
     """Distance to stop at if the model is planning a rolling stop (stop sign), else None."""
