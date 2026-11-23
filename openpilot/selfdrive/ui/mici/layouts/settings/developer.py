@@ -101,6 +101,9 @@ class DeveloperLayoutMici(NavScroller):
                                                     description="normal: camera with lane lines and path.\n" +
                                                                 "gta: GTA VI-style color grade with your car, the lead and a blue path.\n" +
                                                                 "top view: bird's-eye 3D scene built from what the camera sees.")
+    self._stop_line_assist_toggle = BigParamControl("stop-line assist", "StopLineAssist",
+                                                    description="Experimental Mode: stop a few metres earlier for red lights " +
+                                                                "and stop lines, braking firmer if needed. Only adds braking.")
     self._lane_centering_toggle = BigParamControl("SPLC (StarPilot Lane Centering)", "LaneCentering",
                                                   toggle_callback=self._update_lane_centering_settings_enabled,
                                                   description="Experimentally bias the model command toward the detected lane center. Requires two " +
@@ -134,6 +137,7 @@ class DeveloperLayoutMici(NavScroller):
       self._navigation_toggle,
       self._onroad_style_toggle,
       self._planted_steering_toggle,
+      self._stop_line_assist_toggle,
       self._lane_centering_toggle,
       self._lane_centering_pause_toggle,
       self._lane_center_offset_toggle,
@@ -152,6 +156,7 @@ class DeveloperLayoutMici(NavScroller):
       ("NavigationEnabled", self._navigation_toggle),
       ("LaneCentering", self._lane_centering_toggle),
       ("PlantedSteering", self._planted_steering_toggle),
+      ("StopLineAssist", self._stop_line_assist_toggle),
     )
     onroad_blocked_toggles = (self._adb_toggle, self._joystick_toggle)
     release_blocked_toggles = (self._joystick_toggle, self._long_maneuver_toggle, self._lat_maneuver_toggle, self._alpha_long_toggle, self._navigation_toggle)

@@ -2052,6 +2052,19 @@
           ]
         },
         {
+          "id": "stop_line_assist",
+          "title": "Stop-Line Assist",
+          "description": "Firmer, earlier braking when Experimental Mode stops for a red light or stop line.",
+          "items": [
+            {
+              "key": "StopLineAssist",
+              "widget": "toggle",
+              "title": "Stop-Line Assist",
+              "description": "When Experimental Mode is stopping for a light or stop line (no car ahead), aim the stop a few metres before the model's stopping point and brake firmer if needed (up to 3 m/s2, smoothly). Only ever adds braking."
+            }
+          ]
+        },
+        {
           "id": "planted_steering",
           "title": "Planted Steering",
           "description": "Firmer, less floaty steering for cars that use PID lateral control.",

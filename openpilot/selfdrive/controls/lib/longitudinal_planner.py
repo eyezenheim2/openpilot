@@ -8,6 +8,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.accel_boost import AccelBoost
+from openpilot.selfdrive.controls.lib.stop_line_assist import StopLineAssist
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
@@ -39,6 +40,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.fcw = False
     self.dt = dt
     self.accel_boost = AccelBoost()
+    self.stop_line_assist = StopLineAssist(dt)
 
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
     self.a_cruise = init_a
@@ -110,6 +112,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     cruise_should_stop = should_stop(v_ego, self.a_cruise)
 
     output_a_target_e2e = self.accel_boost.update(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
+    # firmer, earlier braking when the model is stopping for a light / stop line (never adds throttle)
+    output_a_target_e2e = self.stop_line_assist.update(sm, v_ego, output_a_target_e2e)
 
     candidates = [(output_a_target_mpc, self.mpc.source, output_should_stop_mpc),
                   (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop)]
