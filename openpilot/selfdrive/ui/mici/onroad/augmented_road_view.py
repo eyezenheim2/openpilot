@@ -571,7 +571,7 @@ class AugmentedRoadView(CameraView):
     percent_font_size = max_radius * 1.8
     percent_extent = rl.measure_text_ex(font, percent_text, percent_font_size, 0)
     gauge_center_x = rect.x + rect.width / 2
-    gauge_y = rect.y + 32 + 25 + 24
+    gauge_y = self._gear_block_y(rect) + 32 + 25 + 24
     percent_x = gauge_center_x - percent_extent.x / 2
     percent_y = gauge_y + max_radius + 10 - percent_extent.y / 2
     glow_alpha = int(35 + 160 * brake_pressure)
@@ -582,6 +582,12 @@ class AugmentedRoadView(CameraView):
                       percent_font_size, 0, glow)
     rl.draw_text_ex(font, percent_text, rl.Vector2(percent_x, percent_y),
                     percent_font_size, 0, color)
+
+  @staticmethod
+  def _gear_block_y(rect: rl.Rectangle) -> float:
+    """Anchor for the PRNDL / dash gauge / brake % block, placed at the bottom of the HUD.
+    The block spans anchor+40 (top of PRNDL) to about anchor+128 (bottom of the brake %); keep it 6 px off the edge."""
+    return rect.y + rect.height - 134
 
   def _draw_fuel_gauge(self) -> None:
     rect = self._content_rect
@@ -611,7 +617,7 @@ class AugmentedRoadView(CameraView):
     gear_step = 36.0
     gear_width = gear_step * 5
     gear_left = rect.x + (rect.width - gear_width) / 2
-    gear_center_y = rect.y + 32 + 25
+    gear_center_y = self._gear_block_y(rect) + 32 + 25
     gray = rl.Color(150, 155, 160, 255)
 
     font = gui_app.font(FontWeight.DISPLAY)
