@@ -9,9 +9,15 @@ Fields reverse-engineered from drive logs (see the commit message for how each w
   bytes 10-11 relative speed, little-endian, centre 0x600, ~0.0121 m/s per unit (r = 0.85 against range rate)
 A zero distance means the slot is empty.
 
+Traffic Sign Recognition: the car's camera sends the recognised sign on bus 2, 0x35E, byte 2
+(also mirrored on bus 1, 0x750 byte 6). Observed: 121 while approaching both stop signs of a drive, 125 with no sign,
+107 / 101 on a highway / city road (probably speed limits, unconfirmed).
+
 This only feeds the UI's top view, published on customReservedRawData1. It never reaches radard,
 lead selection or longitudinal control, so driving behaviour is unchanged.
-Payload: repeated little-endian records of (uint8 id, float32 dist_m, float32 lat_left_m, float32 vrel_mps).
+Payload: header (uint8 version=2, uint8 tsr_code), then repeated little-endian records of
+(uint8 id, float32 dist_m, float32 lat_left_m, float32 vrel_mps).
+The planner also reads tsr_code, only to confirm a stop sign before turning a rolling stop into a full stop.
 """
 import struct
 
@@ -27,6 +33,10 @@ MAX_LAT = 15.0  # m; some slots carry other encodings with nonsense lateral valu
 MAX_DIST = 200.0
 TRIGGER_ADDR = 0x080  # last slot of the cycle: publish once per full sweep
 RECORD = struct.Struct('<Bfff')
+HEADER = struct.Struct('<BB')
+PAYLOAD_VERSION = 2
+TSR_BUS, TSR_ADDR, TSR_BYTE = 2, 0x35E, 2
+TSR_NONE = 125
 
 
 def decode(dat: bytes):
@@ -47,12 +57,18 @@ def main():
   can_sock = messaging.sub_sock('can', conflate=False, timeout=100)
   pm = messaging.PubMaster(['customReservedRawData1'])
   slots: dict[int, tuple] = {}
+  tsr_code = TSR_NONE
   cloudlog.info("honda_objectd: started")
 
   while True:
     for msg in messaging.drain_sock(can_sock, wait_for_one=True):
       publish = False
       for c in msg.can:
+        if c.src == TSR_BUS and c.address == TSR_ADDR:
+          dat = bytes(c.dat)
+          if len(dat) > TSR_BYTE:
+            tsr_code = dat[TSR_BYTE]
+          continue
         if c.src != OBJ_BUS or c.address not in OBJ_ADDRS:
           continue
         obj = decode(bytes(c.dat))
@@ -63,7 +79,7 @@ def main():
         publish |= c.address == TRIGGER_ADDR
       if publish:
         out = messaging.new_message(None, valid=True)
-        out.customReservedRawData1 = b''.join(RECORD.pack(*o) for o in slots.values())
+        out.customReservedRawData1 = HEADER.pack(PAYLOAD_VERSION, tsr_code) + b''.join(RECORD.pack(*o) for o in slots.values())
         pm.send('customReservedRawData1', out)
 
 

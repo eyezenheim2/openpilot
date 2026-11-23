@@ -22,7 +22,8 @@ import pyray as rl
 
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
-from openpilot.system.ui.lib.application import gui_app
+from openpilot.system.ui.lib.application import gui_app, FontWeight
+from openpilot.system.ui.lib.text_measure import measure_text_cached
 
 # Night palette from the sim (highway)
 BG = (21, 29, 43)
@@ -54,6 +55,14 @@ LEAD_MIN_PROB = 0.5
 NEAR = 0.5  # m: anything closer to the virtual camera is skipped
 RADAR_TO_CAMERA = 1.52  # m, object distances are from the front bumper, model distances from the camera
 OBJ_DTYPE = np.dtype([('id', 'u1'), ('dist', '<f4'), ('lat', '<f4'), ('vrel', '<f4')])  # honda_objectd record
+PAYLOAD_VERSION = 2  # honda_objectd header: (version, tsr_code)
+TSR_STOP = 121  # car's Traffic Sign Recognition code for a stop sign
+# stop sign post: placed at the estimated stop line on the right curb (the car's camera says a sign is there, not where)
+SIGN_ROLL_V, SIGN_STOP_V = 2.6, 0.3  # m/s: model plan speeds that mark where it stops / rolls (same as the planner)
+SIGN_DEFAULT_DIST = 20.0  # m: where to show it if the model's plan doesn't say
+SIGN_CURB_OFFSET = 0.6  # m outside the right road edge
+SIGN_POST_H, SIGN_RADIUS = 2.1, 0.38  # m: real post height to the sign's centre, 30-inch octagon
+SIGN_BOOST = 2.2  # drawn larger, like the other cars, so it reads on the small screen
 OBJ_TIMEOUT = 0.4  # s without an update before a tracked car fades out
 LEAD_MATCH_X, LEAD_MATCH_Y = 6.0, 1.8  # m: a tracked car this close to the camera lead is the same car
 
@@ -140,6 +149,10 @@ class TopView:
     self._camera_offset = 0.0
     self._counter = 0
     self._objects: dict[int, dict] = {}  # id -> {'x', 'y' filters, 'alpha' filter, 'seen' time}
+    self._tsr_code = 0
+    self._plan_v = np.zeros(0, dtype=np.float32)
+    self._sign_x = FirstOrderFilter(SIGN_DEFAULT_DIST, 0.3, dt)
+    self._stop_sign_alpha = FirstOrderFilter(0.0, 0.15, dt)
 
   # ---------------------------------------------------------------- data
   def _update_data(self):
@@ -155,6 +168,7 @@ class TopView:
       model = sm['modelV2']
       off = self._camera_offset
       self._path = np.column_stack((model.position.x, np.array(model.position.y) + off)).astype(np.float32)
+      self._plan_v = np.array(model.velocity.x, dtype=np.float32)
       for i, line in enumerate(model.laneLines):
         self._lanes[i] = np.column_stack((line.x, np.array(line.y) + off)).astype(np.float32)
       for i, edge in enumerate(model.roadEdges):
@@ -182,6 +196,8 @@ class TopView:
     dt = 1 / gui_app.target_fps
     if sm.updated['customReservedRawData1'] and sm.recv_frame['customReservedRawData1'] >= ui_state.started_frame:
       raw = bytes(sm['customReservedRawData1'])
+      if len(raw) >= 2 and raw[0] == PAYLOAD_VERSION and (len(raw) - 2) % OBJ_DTYPE.itemsize == 0:
+        self._tsr_code, raw = raw[1], raw[2:]
       recs = np.frombuffer(raw[:len(raw) - len(raw) % OBJ_DTYPE.itemsize], dtype=OBJ_DTYPE)
       for r in recs:
         oid = int(r['id'])
@@ -193,6 +209,7 @@ class TopView:
         o['x'].update(x)
         o['y'].update(y)
         o['seen'] = now
+    self._stop_sign_alpha.update(1.0 if self._tsr_code == TSR_STOP else 0.0)
     for oid in list(self._objects):
       o = self._objects[oid]
       o['alpha'].update(1.0 if now - o['seen'] < OBJ_TIMEOUT else 0.0)
@@ -330,6 +347,45 @@ class TopView:
       if z.min() >= NEAR:
         _fan2d(scr, _rgba(HALO, a * alpha))
 
+  def _sign_distance(self) -> float:
+    """Estimated stop line ahead (model frame x): where the model's plan stops or rolls, a few metres short of it."""
+    v, x = self._plan_v, self._path[:, 0] if self._path.shape[0] else np.zeros(0)
+    if v.size and v.size == x.size:
+      stopped = np.nonzero(v < SIGN_STOP_V)[0]
+      i = int(stopped[0]) if stopped.size else int(np.argmin(v))
+      if v[i] < SIGN_ROLL_V and x[i] > 2.0:
+        return max(3.0, 0.9 * float(x[i]) - 2.5)
+    return SIGN_DEFAULT_DIST
+
+  def _draw_stop_sign_post(self, x: float, y_curb: float, alpha: float, k: float):
+    """Red octagon on a grey post at the curb, in true perspective (it faces back toward us)."""
+    base = _wp(x, y_curb)
+    post_top = SIGN_POST_H * k
+    w = 0.06 * k
+    # post: a thin vertical box, two visible faces
+    for dx in (-w, w):
+      pts = np.array([base + [dx, 0, 0], base + [dx, post_top, 0], base + [dx, post_top, -w * 2], base + [dx, 0, -w * 2]])
+      scr, z = self._cam.project(pts)
+      if z.min() >= NEAR:
+        _fan2d(scr, _rgba((150, 156, 160), alpha, 0.8 if dx < 0 else 0.6))
+    # sign plate: white rim and red face, octagons in the vertical plane facing back toward our car
+    centre = base + [0, post_top, 0.02]
+    for radius, rgb in ((SIGN_RADIUS * k, (245, 245, 245)), (SIGN_RADIUS * k * 0.86, (200, 16, 32))):
+      ang = np.radians(22.5 + 45.0 * np.arange(8))
+      ring = centre + np.column_stack((np.cos(ang) * radius, np.sin(ang) * radius, np.zeros(8)))
+      ring[:, 2] += 0.01 if rgb[0] < 240 else 0.0  # face sits just in front of the rim
+      scr, z = self._cam.project(ring)
+      if z.min() < NEAR:
+        return
+      _fan2d(scr, _rgba(rgb, alpha))
+    # "STOP", sized to the projected plate
+    scr, z = self._cam.project(np.array([centre, centre + [SIGN_RADIUS * k, 0, 0]]))
+    size = int(max(5.0, abs(scr[1, 0] - scr[0, 0]) * 0.75))
+    font = gui_app.font(FontWeight.BOLD)
+    m = measure_text_cached(font, "STOP", size)
+    rl.draw_text_ex(font, "STOP", rl.Vector2(float(scr[0, 0] - m.x / 2), float(scr[0, 1] - m.y / 2)), size, 0,
+                    rl.Color(255, 255, 255, int(255 * alpha)))
+
   def _shadow(self, x_center: float, y: float, alpha: float, scale: float = 1.0):
     o = _wp(x_center, y, 0.02)
     hx, hz = 1.15 * scale, 2.6 * scale
@@ -355,6 +411,21 @@ class TopView:
     finally:
       rl.rl_draw_render_batch_active()  # flush while culling is still off
       rl.rl_enable_backface_culling()
+    self._draw_stop_sign_badge(rect)
+
+  def _draw_stop_sign_badge(self, rect: rl.Rectangle):
+    """Red octagon while the car's own camera (Traffic Sign Recognition) sees a stop sign."""
+    a = self._stop_sign_alpha.x
+    if a < 0.02:
+      return
+    r = 24.0
+    c = rl.Vector2(rect.x + rect.width - 62, rect.y + rect.height * 0.58)
+    rl.draw_poly(c, 8, r + 3, 22.5, rl.Color(255, 255, 255, int(255 * a)))
+    rl.draw_poly(c, 8, r, 22.5, rl.Color(200, 16, 32, int(255 * a)))
+    font = gui_app.font(FontWeight.BOLD)
+    size = 13
+    m = measure_text_cached(font, "STOP", size)
+    rl.draw_text_ex(font, "STOP", rl.Vector2(c.x - m.x / 2, c.y - m.y / 2), size, 0, rl.Color(255, 255, 255, int(255 * a)))
 
   def _draw_scene(self):
     status = ui_state.status
@@ -434,4 +505,15 @@ class TopView:
       self._shadow(cx, y, a, k)
       self._draw_car(cx, y, paint, a, False, k)
     self._shadow(EGO_CENTER_X, y0, 1.0)
+    sign_a = self._stop_sign_alpha.x
+    if sign_a > 0.02:
+      sx = self._sign_x.update(self._sign_distance())
+      if sx > ego_front:
+        x_d, _ = to_display(sx, 0.0)
+        edge = self._edges[1]
+        if edge.shape[0] >= 2:
+          y_curb = float(np.interp(x_d, edge[:, 0], edge[:, 1])) + SIGN_CURB_OFFSET
+        else:
+          y_curb = (float(np.interp(x_d, path[:, 0], path[:, 1])) if path.shape[0] >= 2 else 0.0) + 3.5
+        self._draw_stop_sign_post(x_d, y_curb, sign_a, SIGN_BOOST)
     self._draw_car(EGO_CENTER_X, y0, EGO_PAINT, 1.0, braking)

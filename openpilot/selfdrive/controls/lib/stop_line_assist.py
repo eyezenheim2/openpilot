@@ -7,7 +7,9 @@ This aims ~5 m short of the model's stopping point and, at stop signs, turns the
 
 Two triggers, both only with no lead car at or before the stop:
   - full stop: the model's planned speed reaches ~0 within its horizon (lights, lines)
-  - rolling stop (StopSignFullStop): the model plans to slow below ROLL_V close ahead while we are at moderate speed.
+  - rolling stop (StopSignFullStop): the model plans to slow below ROLL_V close ahead while we are at moderate speed,
+    AND the car's own Traffic Sign Recognition reported a stop sign within SIGN_MEMORY (fresh messages only).
+    Without that confirmation (other cars, decoder not running, stale data) no stop-sign stop happens.
     Once committed, the stop point is latched by odometry and held until standstill + HOLD_TIME, because the
     model plans to accelerate through and would otherwise pull the car along.
 
@@ -47,6 +49,11 @@ A_MIN_V = [-1.8, -2.2, A_MIN]  # m/s2
 JERK = 2.5  # m/s3: how fast the assist command may firm up
 RELEASE_JERK = 4.0  # m/s3: how fast it may let go
 LEAD_CLEARANCE = 5.0  # m: a lead within stop point + this means the stop is for the lead, not a line
+TSR_SERVICE = 'customReservedRawData1'  # honda_objectd: header (version=2, tsr_code) + tracked objects
+TSR_VERSION, TSR_STOP = 2, 121  # car's Traffic Sign Recognition code for a stop sign
+SIGN_MEMORY = 3.0  # s: a stop sign recognised this recently confirms a rolling stop as a stop sign
+SIGN_COMFORT_DECEL = 2.2  # m/s2: if the sign is confirmed late, stop a little closer (never past the slow point) rather than brake harder
+SIGN_SLOW_POINT_GAP = 1.0  # m: the stop is always at least this far before the model's slow point
 
 
 def _floor(v_ego: float) -> float:
@@ -69,6 +76,9 @@ class StopLineAssist:
     self.hold_t = 0.0
     self.latch_t = 0.0
     self.cooldown_until = -1.0
+    self.t = 0.0
+    self.sign_seen_t = -1e9
+    self.tsr_mono = 0
 
   # ------------------------------------------------------------ triggers
   @staticmethod
@@ -111,7 +121,23 @@ class StopLineAssist:
     slow_x = float(x[i])
     if not (ROLL_MIN_DIST < slow_x < ROLL_MAX_DIST) or self._lead_before(sm, slow_x):
       return None
-    return max(MIN_TARGET_DIST, STOP_FRACTION * slow_x - STOP_MARGIN)
+    dist = max(MIN_TARGET_DIST, STOP_FRACTION * slow_x - STOP_MARGIN)
+    # confirmed late (close to the sign): ease the stop point toward the slow point instead of braking harder
+    comfortable = v_ego * v_ego / (2.0 * SIGN_COMFORT_DECEL)
+    return max(dist, min(comfortable, slow_x - SIGN_SLOW_POINT_GAP))
+
+  def _update_sign(self, sm):
+    """Remember when a *fresh* message last reported a stop sign; stale data can't confirm anything."""
+    mono = sm.logMonoTime[TSR_SERVICE] if hasattr(sm, 'logMonoTime') else 0
+    if mono == 0 or mono == self.tsr_mono:
+      return
+    self.tsr_mono = mono
+    raw = bytes(sm[TSR_SERVICE])
+    if len(raw) >= 2 and raw[0] == TSR_VERSION and raw[1] == TSR_STOP:
+      self.sign_seen_t = self.t
+
+  def _sign_confirmed(self) -> bool:
+    return self.t - self.sign_seen_t < SIGN_MEMORY
 
   # ------------------------------------------------------------ update
   def _target(self, sm, v_ego: float) -> float | None:
@@ -146,7 +172,7 @@ class StopLineAssist:
     if full is not None:
       return full
 
-    if self.sign_enabled:
+    if self.sign_enabled and self._sign_confirmed():
       dist = self._rolling_stop_dist(sm, v_ego, v, x)
       if dist is not None:
         self.sign_stop_at = self.odo + dist
@@ -160,11 +186,13 @@ class StopLineAssist:
       self.enabled = self.params.get_bool("StopLineAssist")
       self.sign_enabled = self.params.get_bool("StopSignFullStop")
     self.counter += 1
+    self.t += self.dt
     self.odo += max(v_ego, 0.0) * self.dt
 
     target = None
     if self.enabled and not self.failed:
       try:
+        self._update_sign(sm)
         target = self._target(sm, v_ego)
       except Exception:
         cloudlog.exception("stop_line_assist: disabled after an error")
