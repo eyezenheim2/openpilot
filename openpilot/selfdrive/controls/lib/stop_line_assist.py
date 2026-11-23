@@ -11,7 +11,8 @@ Two triggers, both only with no lead car at or before the stop:
     AND the car's own Traffic Sign Recognition reported a stop sign within SIGN_MEMORY (fresh messages only).
     Without that confirmation (other cars, decoder not running, stale data) no stop-sign stop happens.
     Once committed, the stop point is latched by odometry and held until standstill + HOLD_TIME, because the
-    model plans to accelerate through and would otherwise pull the car along.
+    model plans to accelerate through and would otherwise pull the car along. The braking tapers off over the last
+    ~7 mph (TAIL_V) so the stop settles gently instead of ending with a dip-and-rebound.
 
 Only ever adds braking, never throttle: the output is min(model accel, assist command). The assist command is capped
 (speed-dependent, -3.0 m/s2 at speed easing to -1.8 near standstill) and jerk-limited. Gas, a lead appearing before the
@@ -54,10 +55,44 @@ TSR_VERSION, TSR_STOP = 2, 121  # car's Traffic Sign Recognition code for a stop
 SIGN_MEMORY = 3.0  # s: a stop sign recognised this recently confirms a rolling stop as a stop sign
 SIGN_COMFORT_DECEL = 2.2  # m/s2: if the sign is confirmed late, stop a little closer (never past the slow point) rather than brake harder
 SIGN_SLOW_POINT_GAP = 1.0  # m: the stop is always at least this far before the model's slow point
+# stop-sign stops ease off at the end, like a driver feathering the brake, instead of holding ~2 m/s2 down to walking
+# pace and letting go all at once (drive logs: -1.8..-2.3 m/s2 held to ~1 m/s, then a dip-and-rebound at the stop).
+# Below TAIL_V the decel tapers linearly from TAIL_A[1] to TAIL_A[0] at standstill; the approach above TAIL_V
+# brakes slightly earlier to leave room for that tail, so the car still stops at the same point.
+TAIL_V = 3.0  # m/s (~7 mph)
+TAIL_A = (0.7, 1.6)  # m/s2 of braking at standstill, at TAIL_V (enough at the end to settle, not creep)
+_TAIL_K = (TAIL_A[1] - TAIL_A[0]) / TAIL_V
 
 
 def _floor(v_ego: float) -> float:
   return float(np.interp(v_ego, A_MIN_BP_V, A_MIN_V))
+
+
+def _tail_a(v: float) -> float:
+  """Braking (positive) on the tapered tail at speed v."""
+  return TAIL_A[0] + _TAIL_K * v
+
+
+def _tail_dist(v: float) -> float:
+  """Distance to standstill from speed v (<= TAIL_V) following the tapered tail: integral of u / a(u) du."""
+  v = min(max(v, 0.0), TAIL_V)
+  return v / _TAIL_K - TAIL_A[0] / _TAIL_K ** 2 * float(np.log1p(_TAIL_K * v / TAIL_A[0]))
+
+
+def _sign_decel(v_ego: float, remaining: float) -> float:
+  """Acceleration to stop at `remaining` metres: steady braking down to TAIL_V, then the tapered tail.
+  Closed loop on position: above TAIL_V it adjusts either way; on the tail it only ever firms up if short of room
+  (with spare room it keeps the tail and stops a few tens of cm early rather than creeping in)."""
+  remaining = max(remaining, MIN_TARGET_DIST)
+  if v_ego > TAIL_V:
+    room = remaining - _tail_dist(TAIL_V)
+    if room > 0.5:
+      a = -(v_ego * v_ego - TAIL_V * TAIL_V) / (2.0 * room)
+    else:  # no room left for a tail: plain constant-decel stop
+      a = -v_ego * v_ego / (2.0 * remaining)
+  else:
+    a = -_tail_a(v_ego) * max(1.0, _tail_dist(v_ego) / remaining)  # firmer only if short of room, never softer
+  return max(min(a, 0.0), _floor(v_ego))
 
 
 class StopLineAssist:
@@ -123,7 +158,7 @@ class StopLineAssist:
       return None
     dist = max(MIN_TARGET_DIST, STOP_FRACTION * slow_x - STOP_MARGIN)
     # confirmed late (close to the sign): ease the stop point toward the slow point instead of braking harder
-    comfortable = v_ego * v_ego / (2.0 * SIGN_COMFORT_DECEL)
+    comfortable = max(v_ego * v_ego - TAIL_V * TAIL_V, 0.0) / (2.0 * SIGN_COMFORT_DECEL) + _tail_dist(min(v_ego, TAIL_V))
     return max(dist, min(comfortable, slow_x - SIGN_SLOW_POINT_GAP))
 
   def _update_sign(self, sm):
@@ -166,7 +201,7 @@ class StopLineAssist:
           return None
         return HOLD_ACCEL
       self.hold_t = 0.0
-      return max(-v_ego * v_ego / (2.0 * max(remaining, MIN_TARGET_DIST)), _floor(v_ego))
+      return _sign_decel(v_ego, remaining)
 
     full = self._full_stop_target(sm, v_ego, v, x)
     if full is not None:
@@ -177,7 +212,7 @@ class StopLineAssist:
       if dist is not None:
         self.sign_stop_at = self.odo + dist
         self.hold_t = self.latch_t = 0.0
-        return max(-v_ego * v_ego / (2.0 * dist), _floor(v_ego))
+        return _sign_decel(v_ego, dist)
     return None
 
   def update(self, sm, v_ego: float, a_e2e: float) -> float:
