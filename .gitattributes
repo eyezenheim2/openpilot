@@ -16,3 +16,5 @@ openpilot/selfdrive/car/tests/test_models_segs.txt filter=lfs diff=lfs merge=lfs
 openpilot/common/hardware/comma/updater filter=lfs diff=lfs merge=lfs -text
 # comma's newest driving model, kept as a regular file (see .github/scripts/vendor_model.py)
 openpilot/selfdrive/modeld/models/driving_supercombo.onnx -filter -diff -merge -text
+# drive narration voice clips: regular files (see tools/narration/README.md)
+openpilot/selfdrive/assets/sounds/narration/** -filter -diff -merge -text

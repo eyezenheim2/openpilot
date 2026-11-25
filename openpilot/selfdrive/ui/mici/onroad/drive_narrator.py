@@ -12,8 +12,11 @@ Openpilot's own alerts always win: captions hide under them. That's also why lan
 warnings and the lane-change nudge prompt aren't narrated here; openpilot already shows alerts for them.
 """
 import math
+import random
+import time
 from dataclasses import dataclass
-from enum import IntEnum
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pyray as rl
@@ -23,65 +26,14 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
+from openpilot.selfdrive.ui.narration_text import (Msg, TEXT, VOICES, SpeechTrigger,
+                                                               greeting_choices, spoken_parts)
 
 NARRATION_PARAM = "DriveNarration"
+GREETING_DELAY = 1.5  # s after openpilot has loaded (controls and model running) before the onroad greeting
+GREETING_TZ = ZoneInfo("America/Los_Angeles")  # same zone as the HUD clock
 PLANTED_STEERING_PARAM = "PlantedSteering"
 
-
-class Msg(IntEnum):
-  # higher value wins when several apply at once
-  NONE = 0
-  PLANTED = 1
-  LANES_FADED = 2
-  WAITING = 3
-  PULLING_AWAY = 4
-  GOING = 5
-  SIGN_GO = 6
-  GREEN_LIGHT = 7
-  ROAD_CLEAR = 8
-  SET_SPEED_UP = 9
-  SET_SPEED_DOWN = 10
-  MORE_ROOM = 11
-  LESS_ROOM = 12
-  SPEED_LIMIT = 13
-  CURVE = 14
-  SLOWING = 15
-  STOP_AHEAD = 16
-  STOP_SIGN = 17
-  STOPPING = 18
-  MERGING = 19
-  STEER_LIMIT = 20
-  CUT_IN = 21
-  GAS_OVERRIDE = 22
-  EYES = 23
-
-
-# (first part, second part); {n} is filled with a speed in the display units
-TEXT = {
-  Msg.PLANTED: ("Planted steering", "Holding steady"),
-  Msg.LANES_FADED: ("Lane lines faded", "Following the road"),
-  Msg.WAITING: ("Waiting for", "car ahead"),
-  Msg.PULLING_AWAY: ("Car ahead pulling away", "Keeping up"),
-  Msg.GOING: ("Car ahead moving", "Going"),
-  Msg.SIGN_GO: ("Full stop made", "Going"),
-  Msg.GREEN_LIGHT: ("Light's green", "Going"),
-  Msg.ROAD_CLEAR: ("Road's clear", "Back to {n}"),
-  Msg.SET_SPEED_UP: ("Set to {n}", "Speeding up"),
-  Msg.SET_SPEED_DOWN: ("Set to {n}", "Slowing down"),
-  Msg.MORE_ROOM: ("Farther follow", "Giving more room"),
-  Msg.LESS_ROOM: ("Closer follow", "Closing the gap"),
-  Msg.SPEED_LIMIT: ("Speed limit {n}", "Slowing to match"),
-  Msg.CURVE: ("Curve ahead", "Easing off"),
-  Msg.SLOWING: ("Car ahead slowing", "I'm slowing down"),
-  Msg.STOP_AHEAD: ("Stopping ahead", "Slowing down"),
-  Msg.STOP_SIGN: ("Stop sign", "Stopping"),
-  Msg.STOPPING: ("Car ahead stopped", "I'm stopping"),
-  Msg.MERGING: ("Car merging in", "Watching it"),
-  Msg.STEER_LIMIT: ("Near steering limit", "Be ready"),
-  Msg.CUT_IN: ("Car cutting in", "Making room"),
-  Msg.GAS_OVERRIDE: ("You're on the gas", "I'll take back over"),
-  Msg.EYES: ("Eyes on the road", "please"),
-}
 
 WHITE, BLUE, GREEN, AMBER, ORANGE, RED, TEAL = ((200, 210, 225), (90, 170, 255), (0, 230, 90), (255, 190, 40),
                                                 (255, 150, 30), (255, 90, 70), (60, 220, 200))
@@ -461,7 +413,15 @@ class DriveNarrator(Widget):
     self._alpha = 0.0
     self._enabled = True
     self._planted = False
+    self._voice = True
+    self._voice_dir = VOICES[0][0]
+    self._greeting = True
+    self._volume = 80
     self._param_checked = -1.0
+    self._speech = SpeechTrigger()
+    self._say_id = 0
+    self._greeted = False
+    self._loaded_at: float | None = None
 
   def _inputs(self) -> NarratorInputs:
     sm = ui_state.sm
@@ -547,16 +507,55 @@ class DriveNarrator(Widget):
       steer_request_deg=steer_request,
     )
 
+  def _say(self, parts: list[str]) -> None:
+    """Hand a line to soundd, which plays it on the narration output (see audio_routing.py)."""
+    self._say_id += 1
+    ui_state.params.put("DriveNarrationSay", {"id": f"{time.monotonic_ns()}-{self._say_id}", "time": time.monotonic(),
+                                              "voice": self._voice_dir, "volume": self._volume, "parts": parts})
+
+  def preview(self, volume: int) -> None:
+    """Test line for the onroad volume bar, at the new level right away (soundd only rereads the setting every 2 s)."""
+    self._volume = volume
+    voice_id = int(ui_state.params.get("DriveNarrationVoiceId", return_default=True) or 0)
+    self._voice_dir = VOICES[voice_id][0] if 0 <= voice_id < len(VOICES) else VOICES[0][0]
+    self._say(spoken_parts(Msg.SLOWING))
+
+  def _update_greeting(self, now: float) -> None:
+    """Speak one greeting per onroad session, shortly after openpilot has loaded."""
+    sm = ui_state.sm
+    if not ui_state.started:
+      self._greeted, self._loaded_at = False, None
+      return
+    if self._greeted or not (self._voice and self._greeting):
+      return
+    loaded = sm.recv_frame['carControl'] >= ui_state.started_frame and sm.alive['modelV2']
+    if not loaded:
+      return
+    if self._loaded_at is None:
+      self._loaded_at = now
+    elif now - self._loaded_at >= GREETING_DELAY:
+      self._greeted = True
+      self._say([random.choice(greeting_choices(datetime.now(GREETING_TZ).hour))])
+
   def _render(self, rect: rl.Rectangle) -> None:
     now = rl.get_time()
     if now - self._param_checked > 1.0:
       self._param_checked = now
-      self._enabled = ui_state.params.get_bool(NARRATION_PARAM)
-      self._planted = ui_state.params.get_bool(PLANTED_STEERING_PARAM)
+      params = ui_state.params
+      self._enabled = params.get_bool(NARRATION_PARAM)
+      self._planted = params.get_bool(PLANTED_STEERING_PARAM)
+      self._voice = params.get_bool("DriveNarrationVoice")
+      self._greeting = params.get_bool("DriveNarrationGreeting")
+      self._volume = int(params.get("DriveNarrationVolume", return_default=True) or 0)
+      voice_id = int(params.get("DriveNarrationVoiceId", return_default=True) or 0)
+      self._voice_dir = VOICES[voice_id][0] if 0 <= voice_id < len(VOICES) else VOICES[0][0]
+
+    self._update_greeting(now)
 
     sm = ui_state.sm
     if not self._enabled or not ui_state.started or sm.recv_frame['carControl'] < ui_state.started_frame:
       self._logic.reset()
+      self._speech = SpeechTrigger()
       self._alpha = 0.0
       return
 
@@ -564,6 +563,9 @@ class DriveNarrator(Widget):
     # stay out from under openpilot's own alerts
     if sm['selfdriveState'].alertSize != log.SelfdriveState.AlertSize.none:
       msg = Msg.NONE
+
+    if self._voice and (parts := self._speech.update(msg, self._logic.value, now)):
+      self._say(parts)
 
     if msg != Msg.NONE:
       self._shown = (msg, self._logic.value)

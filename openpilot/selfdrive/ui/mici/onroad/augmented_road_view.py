@@ -23,6 +23,7 @@ from openpilot.selfdrive.ui.mici.onroad.confidence_ball import ConfidenceBall
 from openpilot.selfdrive.ui.mici.onroad.cameraview import CameraView
 from openpilot.system.ui.lib.application import FontWeight, gui_app, MousePos, MouseEvent, TextAlignment, TextAlignmentVertical
 from openpilot.system.ui.widgets.label import UnifiedLabel
+from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.common.filter_simple import BounceFilter, FirstOrderFilter
 from openpilot.common.transformations.camera import DEVICE_CAMERAS, DeviceCameraConfig, view_frame_from_device_frame
@@ -52,6 +53,9 @@ SCREENSHOT_STATUS_SECONDS = 3.0
 HUD_CONTROLS_SECONDS = 5.0
 PLANTED_SWIPE_MIN_DY = 60  # px of downward travel to open the planted steering toggle
 PLANTED_STEERING_PARAM = "PlantedSteering"
+NARRATION_VOLUME_PARAM = "DriveNarrationVolume"
+NARRATION_VOLUME_STEP = 10  # %
+NARRATION_VOLUME_RANGE = (10, 100)  # %, same as the sunnylink setting
 
 CAM_Y_OFFSET = 20
 
@@ -187,6 +191,7 @@ class AugmentedRoadView(CameraView):
     self._offset_controls_until = 0.0
     self._steer_ratio_controls_until = 0.0
     self._planted_controls_until = 0.0
+    self._volume_controls_until = 0.0
     self._camera_offset_value = float(ui_state.params.get("CameraOffset", return_default=True))
     self._screenshot_status = ""
     self._screenshot_status_until = 0.0
@@ -264,11 +269,34 @@ class AugmentedRoadView(CameraView):
     if dy >= PLANTED_SWIPE_MIN_DY and abs(dx) < dy:
       self._offset_controls_until = 0.0
       self._steer_ratio_controls_until = 0.0
+      self._volume_controls_until = 0.0
       self._planted_controls_until = now + HUD_CONTROLS_SECONDS
+      return
+
+    # Swipe up to open the narration volume bar; it closes on its own after a few seconds.
+    if -dy >= PLANTED_SWIPE_MIN_DY and abs(dx) < -dy:
+      self._offset_controls_until = 0.0
+      self._steer_ratio_controls_until = 0.0
+      self._planted_controls_until = 0.0
+      self._volume_controls_until = now + HUD_CONTROLS_SECONDS
       return
 
     if abs(dx) > 30 or abs(dy) > 30:
       super()._handle_mouse_release(mouse_pos)
+      return
+
+    if now < self._volume_controls_until:
+      # left third quieter, right third louder, middle plays a test line; every change plays it too
+      third = self.rect.x + self.rect.width / 3
+      two_thirds = self.rect.x + self.rect.width * 2 / 3
+      volume = self._narration_volume()
+      if mouse_pos.x < third:
+        volume = max(NARRATION_VOLUME_RANGE[0], volume - NARRATION_VOLUME_STEP)
+      elif mouse_pos.x > two_thirds:
+        volume = min(NARRATION_VOLUME_RANGE[1], volume + NARRATION_VOLUME_STEP)
+      ui_state.params.put(NARRATION_VOLUME_PARAM, volume)
+      self._drive_narrator.preview(volume)
+      self._volume_controls_until = now + HUD_CONTROLS_SECONDS
       return
 
     if now < self._planted_controls_until:
@@ -302,6 +330,7 @@ class AugmentedRoadView(CameraView):
     # A tap opens the camera-offset control bar.
     self._steer_ratio_controls_until = 0.0
     self._planted_controls_until = 0.0
+    self._volume_controls_until = 0.0
     self._camera_offset_value = float(ui_state.params.get("CameraOffset", return_default=True))
     self._offset_controls_until = now + 5.0
 
@@ -695,7 +724,10 @@ class AugmentedRoadView(CameraView):
       self._steer_ratio_controls_until = 0.0
     if now >= self._planted_controls_until:
       self._planted_controls_until = 0.0
-    if not self._offset_controls_until and not self._steer_ratio_controls_until and not self._planted_controls_until:
+    if now >= self._volume_controls_until:
+      self._volume_controls_until = 0.0
+    if (not self._offset_controls_until and not self._steer_ratio_controls_until and not self._planted_controls_until and
+        not self._volume_controls_until):
       return
 
     # Use the complete HUD rectangle so the black bar reaches both HUD edges.
@@ -707,6 +739,9 @@ class AugmentedRoadView(CameraView):
     font = gui_app.font(FontWeight.DISPLAY)
     if self._planted_controls_until > now:
       self._draw_planted_steering_control(rect, top, height, font)
+      return
+    if self._volume_controls_until > now:
+      self._draw_narration_volume_control(rect, top, height, font)
       return
 
     ratio_mode = self._steer_ratio_controls_until > now
@@ -762,6 +797,33 @@ class AugmentedRoadView(CameraView):
     rl.draw_text_ex(font, status,
                     rl.Vector2(rect.x + (rect.width - status_measured.x) / 2, top + height * 0.72),
                     status_size, 0, rl.WHITE)
+
+  @staticmethod
+  def _narration_volume() -> int:
+    try:
+      volume = int(ui_state.params.get(NARRATION_VOLUME_PARAM, return_default=True) or 0)
+    except (TypeError, ValueError):
+      volume = 80
+    return max(NARRATION_VOLUME_RANGE[0], min(NARRATION_VOLUME_RANGE[1], volume))
+
+  def _draw_narration_volume_control(self, rect: rl.Rectangle, top: float, height: float, font) -> None:
+    volume = self._narration_volume()
+    value = f"{volume}%"
+    value_size = 82
+    measured = measure_text_cached(font, value, value_size, 0)
+    rl.draw_text_ex(font, value, rl.Vector2(rect.x + (rect.width - measured.x) / 2, top + height * 0.24), value_size, 0, rl.WHITE)
+
+    symbol_size = 68
+    for symbol, x, enabled in (("-", rect.x + rect.width * 0.16, volume > NARRATION_VOLUME_RANGE[0]),
+                               ("+", rect.x + rect.width * 0.84, volume < NARRATION_VOLUME_RANGE[1])):
+      symbol_measured = measure_text_cached(font, symbol, symbol_size, 0)
+      rl.draw_text_ex(font, symbol, rl.Vector2(x - symbol_measured.x / 2, top + (height - symbol_measured.y) / 2), symbol_size, 0,
+                      rl.Color(0, 220, 80, 255) if enabled else rl.Color(120, 125, 125, 255))
+
+    status = "NARRATION VOLUME  -  TAP CENTER TO HEAR" if ui_state.params.get_bool("DriveNarrationVoice") else "NARRATION VOICE IS OFF"
+    status_size = 22
+    status_measured = measure_text_cached(font, status, status_size, 0)
+    rl.draw_text_ex(font, status, rl.Vector2(rect.x + (rect.width - status_measured.x) / 2, top + height * 0.72), status_size, 0, rl.WHITE)
 
   def close(self):
     self._navigation.close()

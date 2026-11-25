@@ -2093,6 +2093,98 @@
               "widget": "toggle",
               "title": "Drive Narration",
               "description": "One-line captions under the speed, e.g. \"Car ahead slowing \u00b7 I'm slowing down\", \"Car cutting in \u00b7 Making room\", \"Stop sign \u00b7 Stopping\", \"Curve ahead \u00b7 Easing off\". Hidden whenever openpilot shows its own alert. Driving captions need openpilot longitudinal control."
+            },
+            {
+              "key": "DriveNarrationVoice",
+              "widget": "toggle",
+              "title": "Narration Voice",
+              "description": "Speak the captions out loud. Plays through a USB speaker when one is plugged in (see Sound Output), otherwise the built-in speaker. Never talks over an openpilot alert."
+            },
+            {
+              "key": "DriveNarrationVoiceId",
+              "widget": "multiple_button",
+              "title": "Voice",
+              "description": "All four are natural-sounding voices made with Piper from the LibriTTS dataset.",
+              "options": [
+                {
+                  "value": 0,
+                  "label": "Voice A"
+                },
+                {
+                  "value": 1,
+                  "label": "Voice B"
+                },
+                {
+                  "value": 2,
+                  "label": "Voice C"
+                },
+                {
+                  "value": 3,
+                  "label": "Voice D"
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "param",
+                  "key": "DriveNarrationVoice",
+                  "equals": true
+                }
+              ]
+            },
+            {
+              "key": "DriveNarrationVolume",
+              "widget": "option",
+              "title": "Voice Volume",
+              "description": "Narration loudness in percent. It also rises with cabin noise, like openpilot's own alerts.",
+              "min": 10,
+              "max": 100,
+              "step": 10,
+              "enablement": [
+                {
+                  "type": "param",
+                  "key": "DriveNarrationVoice",
+                  "equals": true
+                }
+              ]
+            },
+            {
+              "key": "DriveNarrationGreeting",
+              "widget": "toggle",
+              "title": "Onroad Greeting",
+              "description": "A short spoken greeting, depending on the time of day, once openpilot has loaded after you start the car.",
+              "enablement": [
+                {
+                  "type": "param",
+                  "key": "DriveNarrationVoice",
+                  "equals": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "usb_audio",
+          "title": "Sound Output",
+          "description": "Where openpilot's sounds and the narration voice play.",
+          "items": [
+            {
+              "key": "UsbAudioOutput",
+              "widget": "toggle",
+              "title": "Use USB Speaker",
+              "description": "Play all sounds through a USB audio speaker (or USB-C audio adapter) when one is plugged into the comma. Falls back to the built-in speaker when it's unplugged or stops working."
+            },
+            {
+              "key": "UsbAudioAlarmBackup",
+              "widget": "toggle",
+              "title": "Alarm Backup on Built-in Speaker",
+              "description": "While a USB speaker is in use, also play the urgent alarms (take control, driver distraction, steering limit) on the built-in speaker, so a muted or failed USB speaker can't hide them.",
+              "enablement": [
+                {
+                  "type": "param",
+                  "key": "UsbAudioOutput",
+                  "equals": true
+                }
+              ]
             }
           ]
         },
