@@ -2,7 +2,7 @@ from pathlib import Path
 
 from openpilot.selfdrive.ui.narration_text import (GREETINGS, Msg, NOT_SPOKEN, NUMBERS, SPOKEN, TEXT, VOICES, SpeechTrigger,
                                                                all_clip_texts, clip_name, greeting_band, greeting_choices, spoken_parts,
-                                                     time_parts)
+                                                     time_caption, time_parts)
 
 CLIP_ROOT = Path(__file__).resolve().parents[2] / "assets" / "sounds" / "narration"
 
@@ -81,10 +81,12 @@ def test_planted_shown_not_spoken():
 
 
 def test_time_parts():
-  assert time_parts(15, 15) == ["It's", "3", "15"]
-  assert time_parts(0, 0) == ["It's", "12", "o'clock."]
-  assert time_parts(12, 30) == ["It's", "12", "30"]
-  assert time_parts(21, 45) == ["It's", "9", "45"]
+  assert time_parts(15, 15) == ["It's", "3", "15", "P.M."]
+  assert time_parts(8, 0) == ["It's", "8", "A.M."]
+  assert time_parts(0, 0) == ["It's", "12", "A.M."]  # midnight
+  assert time_parts(12, 30) == ["It's", "12", "30", "P.M."]  # noon is P.M.
+  assert time_parts(21, 45) == ["It's", "9", "45", "P.M."]
+  assert time_caption(8, 0) == "8:00 AM" and time_caption(12, 15) == "12:15 PM" and time_caption(0, 45) == "12:45 AM"
   texts = set(all_clip_texts())
   for hour in range(24):
     for minute in (0, 15, 30, 45):

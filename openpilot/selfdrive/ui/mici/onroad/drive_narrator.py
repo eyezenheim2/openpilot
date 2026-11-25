@@ -27,7 +27,7 @@ from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.narration_text import (Msg, TEXT, VOICES, SpeechTrigger,
-                                                               greeting_choices, spoken_parts, time_parts)
+                                                               greeting_choices, spoken_parts, time_caption, time_parts)
 
 NARRATION_PARAM = "DriveNarration"
 GREETING_DELAY = 1.5  # s after openpilot has loaded (controls and model running) before the onroad greeting
@@ -566,7 +566,7 @@ class DriveNarrator(Widget):
     self._time_announced = key
     quarter = t.minute - t.minute % 15
     self._say(time_parts(t.hour, quarter))
-    self._time_caption = ("It's", f"{t.hour % 12 or 12}:{quarter:02d}")
+    self._time_caption = ("It's", time_caption(t.hour, quarter))
     self._time_caption_until = now + TIME_CAPTION_S
 
   def _render(self, rect: rl.Rectangle) -> None:

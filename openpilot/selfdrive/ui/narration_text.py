@@ -139,15 +139,19 @@ def greeting_choices(hour: int) -> list[str]:
   return GREETINGS[greeting_band(hour)] + GREETINGS["any"]
 
 
-# quarter-hour time announcement: "It's" + hour + minutes ("It's" + "3" + "15"), or "It's" + "12" + "o'clock."
+# quarter-hour time announcement: "It's" + hour (+ minutes) + "A.M."/"P.M." ("A.M." is what Piper reads as "ay em")
 TIME_PREFIX = "It's"
-TIME_OCLOCK = "o'clock."
+TIME_AM, TIME_PM = "A.M.", "P.M."
 
 
 def time_parts(hour: int, minute: int) -> list[str]:
-  """Spoken time on a 12-hour clock: (15, 30) -> ["It's", "3", "30"], (0, 0) -> ["It's", "12", "o'clock."]."""
+  """Spoken time on a 12-hour clock: (15, 30) -> ["It's", "3", "30", "P.M."], (8, 0) -> ["It's", "8", "A.M."]."""
   h12 = hour % 12 or 12
-  return [TIME_PREFIX, str(h12), TIME_OCLOCK if minute == 0 else str(minute)]
+  return [TIME_PREFIX, str(h12)] + ([str(minute)] if minute else []) + [TIME_AM if hour < 12 else TIME_PM]
+
+
+def time_caption(hour: int, minute: int) -> str:
+  return f"{hour % 12 or 12}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
 
 
 # shown but not spoken: fires often at low speed and is a tuning aid rather than news
@@ -198,7 +202,7 @@ def all_clip_texts() -> list[str]:
   """Every clip a voice needs."""
   phrases = {p for parts in SPOKEN.values() for p in parts if p != "{n}"}
   phrases |= {g for lines in GREETINGS.values() for g in lines}
-  phrases |= {TIME_PREFIX, TIME_OCLOCK}
+  phrases |= {TIME_PREFIX, TIME_AM, TIME_PM}
   return sorted(phrases) + [str(n) for n in NUMBERS]
 
 
