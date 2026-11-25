@@ -43,7 +43,7 @@ def test_shows_when_bundled_model_is_ch3(onnx):
   assert [b.internalName for b in bundles] == ["SC", "CH3"]
   ch3 = bundles[1]
   assert ch3.runner == custom.ModelManagerSP.Runner.stock
-  assert ch3.displayName == "CH3 - Crumbly Cheddar (November 24, 2026)"
+  assert ch3.displayName == "Crumbly Cheddar (CH3) (November 24, 2026)"
   assert len(ch3.models) == 0
   assert local_bundle_dicts("qcom", path)
 

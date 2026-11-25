@@ -23,7 +23,7 @@ LOCAL_QCOM_BUNDLES = [
   {
     "index": 1000,
     "short_name": "CH3",
-    "display_name": "CH3 - Crumbly Cheddar (November 24, 2026)",
+    "display_name": "Crumbly Cheddar (CH3) (November 24, 2026)",
     "ref": "local-ch3-962396e7",
     "onnx_sha256": "962396e7909556af6a9c7bfb7ad6db01a8d2c8da0760379eb71efda004cb3548",
     "runner": "stock",
