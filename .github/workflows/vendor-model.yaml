@@ -1,0 +1,46 @@
+name: vendor driving model
+
+# Pulls a comma driving model into the branch as a regular file; see .github/scripts/vendor_model.py.
+# Runs when .github/vendor-model.json changes on a push, or by hand from the Actions tab.
+on:
+  push:
+    paths:
+      - '.github/vendor-model.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vendor-model-${{ github.ref }}
+
+jobs:
+  vendor:
+    if: github.repository == 'eyezenheim2/openpilot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 1
+          lfs: false
+          submodules: false
+
+      - name: download and place the model
+        run: python3 .github/scripts/vendor_model.py
+
+      - name: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .gitattributes openpilot/selfdrive/modeld/models/driving_supercombo.onnx \
+                  openpilot/sunnypilot/models/model_name.py openpilot/sunnypilot/models/tests/model_hash
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+            exit 0
+          fi
+          name=$(python3 -c "import json; print(json.load(open('.github/vendor-model.json'))['name'])")
+          src=$(python3 -c "import json; print(json.load(open('.github/vendor-model.json')).get('source', ''))")
+          git commit -m "Driving model: ${name}" -m "Vendored from comma's LFS as a regular file by the vendor-model workflow. Source: ${src}"
+          git push origin HEAD:${{ github.ref_name }}
