@@ -11,6 +11,7 @@ from requests.exceptions import (SSLError, RequestException, HTTPError)
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.models.helpers import is_bundle_version_compatible
+from openpilot.sunnypilot.models.local_bundles import local_bundle_dicts
 from openpilot.cereal import custom
 
 
@@ -179,6 +180,9 @@ class ModelFetcher:
     return not any(bundle.get("is_big") is True for bundle in bundles)
 
   def get_bundles_for_source(self, source: str) -> list[custom.ModelManagerSP.ModelBundle]:
+    return with_local_bundles(source, self._get_remote_bundles(source))
+
+  def _get_remote_bundles(self, source: str) -> list[custom.ModelManagerSP.ModelBundle]:
     if source not in self.MODEL_SOURCES:
       cloudlog.warning(f"Unknown model source: {source}")
       return []
@@ -228,10 +232,24 @@ def get_cached_bundles(params: Params, source: str) -> list[custom.ModelManagerS
   if not cached_data:
     return []
   try:
-    return ModelParser.parse_models(cached_data)
+    return with_local_bundles(source, ModelParser.parse_models(cached_data))
   except Exception as e:
     cloudlog.warning(f"Failed to parse cached models for source {source}: {e}")
     return []
+
+
+def with_local_bundles(source: str, remote: list[custom.ModelManagerSP.ModelBundle]) -> list[custom.ModelManagerSP.ModelBundle]:
+  """Append on-device entries (see local_bundles). Only alongside a real catalog: an empty list means the
+  fetch failed, and validate_active_bundles must keep seeing it as empty so it doesn't reset a selection."""
+  if not remote:
+    return remote
+  try:
+    local = ModelParser.parse_models({"bundles": local_bundle_dicts(source)})
+  except Exception:
+    cloudlog.exception("failed to add local model bundles")
+    return remote
+  refs = {b.ref for b in remote}
+  return remote + [b for b in local if b.ref not in refs]
 
 
 if __name__ == "__main__":
