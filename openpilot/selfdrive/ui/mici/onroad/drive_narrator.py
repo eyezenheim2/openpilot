@@ -27,16 +27,20 @@ from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.narration_text import (Msg, TEXT, VOICES, SpeechTrigger,
-                                                               greeting_choices, spoken_parts)
+                                                               greeting_choices, spoken_parts, time_parts)
 
 NARRATION_PARAM = "DriveNarration"
 GREETING_DELAY = 1.5  # s after openpilot has loaded (controls and model running) before the onroad greeting
 GREETING_TZ = ZoneInfo("America/Los_Angeles")  # same zone as the HUD clock
+TIME_WINDOW_MIN = 2  # the quarter-hour time is said within this many minutes of :00/:15/:30/:45, or skipped
+TIME_QUIET_S = 3.0  # and only once nothing has been said for this long
+TIME_CAPTION_S = 3.0  # s the "It's · 3:15" caption stays up (a driving caption takes its place right away)
 PLANTED_STEERING_PARAM = "PlantedSteering"
 
 
 WHITE, BLUE, GREEN, AMBER, ORANGE, RED, TEAL = ((200, 210, 225), (90, 170, 255), (0, 230, 90), (255, 190, 40),
                                                 (255, 150, 30), (255, 90, 70), (60, 220, 200))
+TIME_ACCENT = (200, 210, 225)
 ACCENT = {
   Msg.PLANTED: TEAL, Msg.LANES_FADED: AMBER, Msg.WAITING: WHITE, Msg.PULLING_AWAY: GREEN, Msg.GOING: GREEN,
   Msg.SIGN_GO: GREEN, Msg.GREEN_LIGHT: GREEN, Msg.ROAD_CLEAR: GREEN, Msg.SET_SPEED_UP: GREEN, Msg.SET_SPEED_DOWN: BLUE,
@@ -409,7 +413,9 @@ class DriveNarrator(Widget):
   def __init__(self):
     super().__init__()
     self._logic = NarratorLogic()
-    self._shown: tuple[Msg, int] = (Msg.NONE, 0)  # what's on screen, kept through the fade-out
+    self._shown: tuple[str, str, tuple] | None = None  # (title, sub, accent) on screen, kept through the fade-out
+    self._time_caption: tuple[str, str] | None = None
+    self._time_caption_until = 0.0
     self._alpha = 0.0
     self._enabled = True
     self._planted = False
@@ -422,6 +428,9 @@ class DriveNarrator(Widget):
     self._say_id = 0
     self._greeted = False
     self._loaded_at: float | None = None
+    self._time_on = True
+    self._last_said_at = -1e9
+    self._time_announced: tuple[int, int, int] | None = None  # (day, hour, quarter) already announced
 
   def _inputs(self) -> NarratorInputs:
     sm = ui_state.sm
@@ -510,6 +519,7 @@ class DriveNarrator(Widget):
   def _say(self, parts: list[str]) -> None:
     """Hand a line to soundd, which plays it on the narration output (see audio_routing.py)."""
     self._say_id += 1
+    self._last_said_at = rl.get_time()
     ui_state.params.put("DriveNarrationSay", {"id": f"{time.monotonic_ns()}-{self._say_id}", "time": time.monotonic(),
                                               "voice": self._voice_dir, "volume": self._volume, "parts": parts})
 
@@ -537,6 +547,28 @@ class DriveNarrator(Widget):
       self._greeted = True
       self._say([random.choice(greeting_choices(datetime.now(GREETING_TZ).hour))])
 
+  def _update_time(self, now: float) -> None:
+    """Say the time at each quarter hour while onroad, in a quiet moment (no recent line, no openpilot alert)."""
+    if not (ui_state.started and self._voice and self._time_on and self._loaded_at is not None):
+      return
+    t = datetime.now(GREETING_TZ)
+    if t.minute % 15 >= TIME_WINDOW_MIN:
+      return
+    key = (t.toordinal(), t.hour, t.minute // 15)
+    if key == self._time_announced:
+      return
+    if self._time_announced is None and not self._greeted:
+      return  # let the greeting go first
+    if now - self._last_said_at < TIME_QUIET_S:
+      return
+    if ui_state.sm['selfdriveState'].alertSize != log.SelfdriveState.AlertSize.none:
+      return
+    self._time_announced = key
+    quarter = t.minute - t.minute % 15
+    self._say(time_parts(t.hour, quarter))
+    self._time_caption = ("It's", f"{t.hour % 12 or 12}:{quarter:02d}")
+    self._time_caption_until = now + TIME_CAPTION_S
+
   def _render(self, rect: rl.Rectangle) -> None:
     now = rl.get_time()
     if now - self._param_checked > 1.0:
@@ -546,11 +578,13 @@ class DriveNarrator(Widget):
       self._planted = params.get_bool(PLANTED_STEERING_PARAM)
       self._voice = params.get_bool("DriveNarrationVoice")
       self._greeting = params.get_bool("DriveNarrationGreeting")
+      self._time_on = params.get_bool("DriveNarrationTime")
       self._volume = int(params.get("DriveNarrationVolume", return_default=True) or 0)
       voice_id = int(params.get("DriveNarrationVoiceId", return_default=True) or 0)
       self._voice_dir = VOICES[voice_id][0] if 0 <= voice_id < len(VOICES) else VOICES[0][0]
 
     self._update_greeting(now)
+    self._update_time(now)
 
     sm = ui_state.sm
     if not self._enabled or not ui_state.started or sm.recv_frame['carControl'] < ui_state.started_frame:
@@ -567,18 +601,20 @@ class DriveNarrator(Widget):
     if self._voice and (parts := self._speech.update(msg, self._logic.value, now)):
       self._say(parts)
 
-    if msg != Msg.NONE:
-      self._shown = (msg, self._logic.value)
-    target = 1.0 if msg != Msg.NONE else 0.0
+    visible = msg != Msg.NONE
+    if visible:
+      self._shown = (*fill_text(msg, self._logic.value), ACCENT[msg])
+    elif (self._time_caption is not None and now < self._time_caption_until and
+          sm['selfdriveState'].alertSize == log.SelfdriveState.AlertSize.none):
+      self._shown, visible = (*self._time_caption, TIME_ACCENT), True
+    target = 1.0 if visible else 0.0
     self._alpha += (target - self._alpha) * (0.35 if target else 0.15)
-    if self._alpha < 0.02 or self._shown[0] == Msg.NONE:
+    if self._alpha < 0.02 or self._shown is None:
       return
     self._draw(rect, *self._shown, self._alpha)
 
   @staticmethod
-  def _draw(rect: rl.Rectangle, msg: Msg, value: int, alpha: float) -> None:
-    title, sub = fill_text(msg, value)
-    accent = ACCENT[msg]
+  def _draw(rect: rl.Rectangle, title: str, sub: str, accent: tuple, alpha: float) -> None:
     font = gui_app.font(FontWeight.DISPLAY)
     font_sub = gui_app.font(FontWeight.SEMI_BOLD)
     sep = "  ·  "

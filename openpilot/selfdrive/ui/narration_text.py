@@ -139,6 +139,17 @@ def greeting_choices(hour: int) -> list[str]:
   return GREETINGS[greeting_band(hour)] + GREETINGS["any"]
 
 
+# quarter-hour time announcement: "It's" + hour + minutes ("It's" + "3" + "15"), or "It's" + "12" + "o'clock."
+TIME_PREFIX = "It's"
+TIME_OCLOCK = "o'clock."
+
+
+def time_parts(hour: int, minute: int) -> list[str]:
+  """Spoken time on a 12-hour clock: (15, 30) -> ["It's", "3", "30"], (0, 0) -> ["It's", "12", "o'clock."]."""
+  h12 = hour % 12 or 12
+  return [TIME_PREFIX, str(h12), TIME_OCLOCK if minute == 0 else str(minute)]
+
+
 # shown but not spoken: fires often at low speed and is a tuning aid rather than news
 NOT_SPOKEN = {Msg.PLANTED}
 
@@ -187,6 +198,7 @@ def all_clip_texts() -> list[str]:
   """Every clip a voice needs."""
   phrases = {p for parts in SPOKEN.values() for p in parts if p != "{n}"}
   phrases |= {g for lines in GREETINGS.values() for g in lines}
+  phrases |= {TIME_PREFIX, TIME_OCLOCK}
   return sorted(phrases) + [str(n) for n in NUMBERS]
 
 

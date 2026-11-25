@@ -2159,6 +2159,19 @@
                   "equals": true
                 }
               ]
+            },
+            {
+              "key": "DriveNarrationTime",
+              "widget": "toggle",
+              "title": "Time Announcements",
+              "description": "Say the time every quarter hour while driving (\"It's three fifteen\"), in a quiet moment, never over a caption or an openpilot alert.",
+              "enablement": [
+                {
+                  "type": "param",
+                  "key": "DriveNarrationVoice",
+                  "equals": true
+                }
+              ]
             }
           ]
         },

@@ -1,7 +1,8 @@
 from pathlib import Path
 
 from openpilot.selfdrive.ui.narration_text import (GREETINGS, Msg, NOT_SPOKEN, NUMBERS, SPOKEN, TEXT, VOICES, SpeechTrigger,
-                                                               all_clip_texts, clip_name, greeting_band, greeting_choices, spoken_parts)
+                                                               all_clip_texts, clip_name, greeting_band, greeting_choices, spoken_parts,
+                                                     time_parts)
 
 CLIP_ROOT = Path(__file__).resolve().parents[2] / "assets" / "sounds" / "narration"
 
@@ -77,3 +78,14 @@ def test_new_caption_interrupts():
 
 def test_planted_shown_not_spoken():
   assert run_trigger([(Msg.PLANTED, 0, 3.0)]) == []
+
+
+def test_time_parts():
+  assert time_parts(15, 15) == ["It's", "3", "15"]
+  assert time_parts(0, 0) == ["It's", "12", "o'clock."]
+  assert time_parts(12, 30) == ["It's", "12", "30"]
+  assert time_parts(21, 45) == ["It's", "9", "45"]
+  texts = set(all_clip_texts())
+  for hour in range(24):
+    for minute in (0, 15, 30, 45):
+      assert set(time_parts(hour, minute)) <= texts, (hour, minute)  # every part has a clip
