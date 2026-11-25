@@ -20,7 +20,13 @@ from openpilot.selfdrive.ui.narration_text import CHIME, CHIME_FILE, clip_name, 
 ASOUND_CARDS = Path("/proc/asound/cards")
 NARRATION_DIR = Path(BASEDIR) / "openpilot" / "selfdrive" / "assets" / "sounds" / "narration"
 USB_HINT = "usb"
-NARRATION_MIN_GAIN = 0.5  # narration never drops below this share of its set volume in a quiet cabin
+# voice clips get gentle compression on load: quiet syllables come up, peaks stay put, so speech sounds louder
+# on the comma four's fixed-gain speaker (the chime is left as is)
+COMP_BLOCK_S = 0.005  # envelope resolution
+COMP_RELEASE_S = 0.08
+COMP_THRESHOLD = 0.12  # envelope level where compression starts (full scale = 1)
+COMP_RATIO = 3.0
+COMP_PEAK = 0.97  # makeup gain brings the peak back up to this
 
 
 def usb_card_present(cards_path: Path = ASOUND_CARDS) -> bool:
@@ -53,6 +59,25 @@ def _read_clip(path: Path) -> tuple[np.ndarray, int]:
     return np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768.0, w.getframerate()
 
 
+def compress(x: np.ndarray, rate: int) -> np.ndarray:
+  """Gentle speech compressor: blockwise peak envelope with instant attack and smooth release, ratio above a threshold,
+  then makeup gain to COMP_PEAK. Runs once per clip when it's loaded."""
+  if len(x) == 0:
+    return x
+  block = max(1, int(COMP_BLOCK_S * rate))
+  n = -(-len(x) // block)
+  peaks = np.abs(np.pad(x, (0, n * block - len(x)))).reshape(n, block).max(axis=1)
+  env = np.empty(n, np.float32)
+  level, release = 0.0, np.exp(-COMP_BLOCK_S / COMP_RELEASE_S)
+  for i, p in enumerate(peaks):
+    level = p if p > level else level * release + p * (1 - release)
+    env[i] = level
+  gain = np.where(env > COMP_THRESHOLD, (np.maximum(env, 1e-9) / COMP_THRESHOLD) ** (1 / COMP_RATIO - 1), 1.0)
+  y = x * np.repeat(gain, block)[:len(x)]
+  peak = np.abs(y).max()
+  return (y * (COMP_PEAK / peak)).astype(np.float32) if peak > 0 else y
+
+
 def _resample(x: np.ndarray, src: int, dst: int) -> np.ndarray:
   if src == dst or len(x) < 2:
     return x
@@ -77,6 +102,8 @@ class NarrationPlayer:
     if key not in self._cache:
       path = self.clip_dir / CHIME_FILE if text == CHIME else self.clip_dir / voice / f"{clip_name(text)}.wav"
       x, rate = _read_clip(path)
+      if text != CHIME:
+        x = compress(x, rate)
       self._cache[key] = _resample(x, rate, self.sample_rate)
     return self._cache[key]
 
@@ -124,6 +151,6 @@ class NarrationPlayer:
     return out
 
 
-def narration_gain(volume_pct: int, alert_volume: float) -> float:
-  """Narration level: the user's volume setting, following cabin noise like the alerts but never too quiet to hear."""
-  return max(0.0, min(1.0, volume_pct / 100.0)) * max(NARRATION_MIN_GAIN, min(1.0, alert_volume))
+def narration_gain(volume_pct: int) -> float:
+  """Narration level: the user's volume setting as is (100% = full scale), whatever the cabin noise."""
+  return max(0.0, min(1.0, volume_pct / 100.0))

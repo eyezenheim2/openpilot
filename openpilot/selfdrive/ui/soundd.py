@@ -94,6 +94,7 @@ class Soundd(QuietMode):
     # USB speaker routing and drive narration (see audio_routing.py)
     self.narration = NarrationPlayer(SAMPLE_RATE)
     self.narration_volume = 80
+    self.alert_volume_floor = 0.3
     self.backup_alert = AudibleAlert.none
     self.backup_sound_frame = 0
 
@@ -147,7 +148,7 @@ class Soundd(QuietMode):
       self.narration.stop()  # never talk over an alert
     elif self.narration.playing:
       volume = self.narration.volume if self.narration.volume is not None else self.narration_volume
-      data = data + self.narration.read(frames) * narration_gain(volume, self.current_volume)
+      data = data + self.narration.read(frames) * narration_gain(volume)
     data_out[:frames, 0] = data
 
   def backup_callback(self, data_out: np.ndarray, frames: int, time, status) -> None:
@@ -194,7 +195,16 @@ class Soundd(QuietMode):
 
   def calculate_volume(self, weighted_db):
     volume = ((weighted_db - AMBIENT_DB) / DB_SCALE) * (MAX_VOLUME - MIN_VOLUME) + MIN_VOLUME
-    return math.pow(VOLUME_BASE, (np.clip(volume, MIN_VOLUME, MAX_VOLUME) - 1))
+    # AlertVolumeFloor: never quieter than this in a quiet cabin (stock floor is ~7% of full scale)
+    return max(math.pow(VOLUME_BASE, (np.clip(volume, MIN_VOLUME, MAX_VOLUME) - 1)), self.alert_volume_floor)
+
+  def load_alert_volume_floor(self) -> None:
+    try:
+      pct = int(self.params.get("AlertVolumeFloor", return_default=True) or 0)
+    except (TypeError, ValueError):
+      pct = 30
+    self.alert_volume_floor = max(0.0, min(1.0, pct / 100.0))
+    self.current_volume = max(self.current_volume, self.alert_volume_floor)
 
   def routing_settings(self) -> tuple[bool, bool]:
     return self.params.get_bool("UsbAudioOutput"), self.params.get_bool("UsbAudioAlarmBackup")
@@ -260,6 +270,7 @@ class Soundd(QuietMode):
     rk = Ratekeeper(20)
     frame = 0
     self.narration_volume = int(self.params.get("DriveNarrationVolume", return_default=True) or 0)
+    self.load_alert_volume_floor()
     while True:
       sm.update(0)
       frame += 1
@@ -270,6 +281,7 @@ class Soundd(QuietMode):
         self.narration.handle_request(self.params.get("DriveNarrationSay"), now=time.monotonic())
       if frame % ROUTING_CHECK_FRAMES == 0:
         self.narration_volume = int(self.params.get("DriveNarrationVolume", return_default=True) or 0)
+        self.load_alert_volume_floor()
         if usb_card_present() != usb_present or self.routing_settings() != settings:
           cloudlog.info("soundd: audio outputs changed, reopening")
           return

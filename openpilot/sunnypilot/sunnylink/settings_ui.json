@@ -2135,7 +2135,7 @@
               "key": "DriveNarrationVolume",
               "widget": "option",
               "title": "Voice Volume",
-              "description": "Narration loudness in percent. It also rises with cabin noise, like openpilot's own alerts.",
+              "description": "Narration loudness in percent of full volume, whatever the cabin noise. Also adjustable while driving (swipe left on the driving screen).",
               "min": 10,
               "max": 100,
               "step": 10,
@@ -2178,8 +2178,17 @@
         {
           "id": "usb_audio",
           "title": "Sound Output",
-          "description": "Where openpilot's sounds and the narration voice play.",
+          "description": "Where openpilot's sounds and the narration voice play, and how quiet the alerts can get.",
           "items": [
+            {
+              "key": "AlertVolumeFloor",
+              "widget": "option",
+              "title": "Minimum Alert Volume",
+              "description": "The quietest openpilot's chimes and alerts get in a quiet cabin, in percent of full volume (stock is about 7%). They still get louder with cabin noise, and urgent alarms still ramp up to full.",
+              "min": 10,
+              "max": 100,
+              "step": 10
+            },
             {
               "key": "UsbAudioOutput",
               "widget": "toggle",

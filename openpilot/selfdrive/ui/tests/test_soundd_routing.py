@@ -81,3 +81,13 @@ def test_line_volume_overrides_setting():
     s.narration.handle_request({"id": time.monotonic_ns(), "time": time.monotonic(), "voice": "voice_a", "volume": vol,
                                 "parts": ["Car ahead slowing."]}, now=time.monotonic())
   assert np.abs(run(loud.callback)).max() == pytest.approx(5 * np.abs(run(quiet.callback)).max(), rel=1e-3)
+
+
+def test_alert_volume_floor():
+  s = make_soundd()
+  s.alert_volume_floor = 0.0
+  quiet = s.calculate_volume(20.0)  # very quiet cabin
+  assert quiet < 0.1  # stock: ~7% of full scale
+  s.alert_volume_floor = 0.3
+  assert s.calculate_volume(20.0) == pytest.approx(0.3)
+  assert s.calculate_volume(80.0) == pytest.approx(1.0)  # loud cabin still goes to full

@@ -64,9 +64,23 @@ def test_new_line_replaces_current():
   assert p._pos == 0
 
 
-@pytest.mark.parametrize("vol,alert,expected", [(80, 0.067, 0.4), (80, 1.0, 0.8), (100, 0.7, 0.7), (0, 1.0, 0.0), (150, 1.0, 1.0)])
-def test_narration_gain(vol, alert, expected):
-  assert narration_gain(vol, alert) == pytest.approx(expected)
+@pytest.mark.parametrize("vol,expected", [(80, 0.8), (100, 1.0), (10, 0.1), (0, 0.0), (150, 1.0)])
+def test_narration_gain_is_the_setting(vol, expected):
+  assert narration_gain(vol) == pytest.approx(expected)
+
+
+def test_compress_makes_speech_louder_without_clipping():
+  from openpilot.selfdrive.ui.audio_routing import COMP_PEAK, _read_clip, compress
+  from openpilot.selfdrive.ui.narration_text import clip_name
+  from pathlib import Path
+  root = Path(__file__).resolve().parents[2] / "assets" / "sounds" / "narration" / "voice_a"
+  for text in ("Car ahead slowing.", "It's", "65"):
+    x, rate = _read_clip(root / f"{clip_name(text)}.wav")
+    y = compress(x, rate)
+    assert len(y) == len(x)
+    assert np.abs(y).max() == pytest.approx(COMP_PEAK, rel=1e-3)
+    rms = lambda a: float(np.sqrt(np.mean(a ** 2)))  # noqa: E731
+    assert rms(y) > 1.3 * rms(x), text  # at least ~2.3 dB louder on average
 
 
 def test_line_carries_its_volume():

@@ -331,6 +331,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DriveNarrationGreeting", {PERSISTENT | BACKUP, BOOL, "1"}},  // spoken greeting when openpilot goes onroad
     {"DriveNarrationTime", {PERSISTENT | BACKUP, BOOL, "1"}},  // in stop-and-go traffic, say the time once per quarter hour while stopped
     {"DriveNarrationSay", {CLEAR_ON_MANAGER_START, JSON}},  // UI -> soundd: {"id", "time", "voice", "volume", "parts"}
+    {"AlertVolumeFloor", {PERSISTENT | BACKUP, INT, "30"}},  // %, quietest openpilot alerts get in a quiet cabin (stock ~7)
     {"UsbAudioOutput", {PERSISTENT | BACKUP, BOOL, "1"}},  // play all sounds on a USB speaker when one is plugged in
     {"UsbAudioAlarmBackup", {PERSISTENT | BACKUP, BOOL, "1"}},  // urgent alarms also on the built-in speaker while on USB
     {"OnroadStyle", {PERSISTENT | BACKUP, INT, "2"}},  // 0 normal, 1 gta, 2 top view
