@@ -97,6 +97,10 @@ class DeveloperLayoutMici(NavScroller):
                                                     description="Firmer, less floaty steering: stronger curve feedforward, " +
                                                                 "tighter lane hold, and damping against weave. Applies " +
                                                                 "within about a second.")
+    self._drive_narration_toggle = BigParamControl("drive narration", "DriveNarration",
+                                                   description="Short captions on the driving screen when openpilot reacts to " +
+                                                               "the car ahead: slowing or stopping for it, a car cutting in, " +
+                                                               "or a car drifting in to merge. Needs openpilot longitudinal.")
     self._onroad_style_toggle = BigMultiParamToggle("onroad view", "OnroadStyle", list(ONROAD_STYLE_LABELS),
                                                     description="normal: camera with lane lines and path.\n" +
                                                                 "gta: GTA VI-style color grade with your car, the lead and a blue path.\n" +
@@ -140,6 +144,7 @@ class DeveloperLayoutMici(NavScroller):
       self._navigation_toggle,
       self._onroad_style_toggle,
       self._planted_steering_toggle,
+      self._drive_narration_toggle,
       self._stop_line_assist_toggle,
       self._stop_sign_toggle,
       self._lane_centering_toggle,
@@ -160,6 +165,7 @@ class DeveloperLayoutMici(NavScroller):
       ("NavigationEnabled", self._navigation_toggle),
       ("LaneCentering", self._lane_centering_toggle),
       ("PlantedSteering", self._planted_steering_toggle),
+      ("DriveNarration", self._drive_narration_toggle),
       ("StopLineAssist", self._stop_line_assist_toggle),
       ("CaliforniaStop", self._stop_sign_toggle),
     )

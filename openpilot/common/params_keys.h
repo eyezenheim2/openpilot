@@ -324,6 +324,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"IsReleaseSpBranch", {CLEAR_ON_MANAGER_START, BOOL}},
     {"LaneCentering", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"PlantedSteering", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"DriveNarration", {PERSISTENT | BACKUP, BOOL, "1"}},  // onroad captions: "car ahead slowing / I'm slowing down", cut-ins, merges
     {"OnroadStyle", {PERSISTENT | BACKUP, INT, "2"}},  // 0 normal, 1 gta, 2 top view
     {"StopLineAssist", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"CaliforniaStop", {PERSISTENT | BACKUP, BOOL, "0"}},  // on: model's rolling stop at stop signs; off: camera-confirmed full stop

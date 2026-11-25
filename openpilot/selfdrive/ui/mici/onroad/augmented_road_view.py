@@ -12,6 +12,7 @@ from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.mici.onroad import SIDE_PANEL_WIDTH
 from openpilot.selfdrive.ui.mici.onroad.alert_renderer import AlertRenderer
 from openpilot.selfdrive.ui.mici.onroad.driver_state import DriverStateRenderer
+from openpilot.selfdrive.ui.mici.onroad.drive_narrator import DriveNarrator
 from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.mici.onroad.long_indicator import LongIndicator
 from openpilot.selfdrive.ui.mici.onroad.model_renderer import ModelRenderer
@@ -204,6 +205,7 @@ class AugmentedRoadView(CameraView):
     self._hud_renderer = HudRenderer()
     self._long_indicator = LongIndicator()
     self._alert_renderer = AlertRenderer()
+    self._drive_narrator = DriveNarrator()
     self._driver_state_renderer = DriverStateRenderer()
     self._confidence_ball = ConfidenceBall()
     self._offroad_label = UnifiedLabel("start the car to\nuse sunnypilot", 54, FontWeight.DISPLAY,
@@ -393,6 +395,7 @@ class AugmentedRoadView(CameraView):
     self._draw_fuel_gauge()
     self._draw_brake_pressure_percent()
     self._draw_gear_change_popup()
+    self._drive_narrator.render(self._content_rect)
     # Keep alert popups above the HUD text and background.
     self._alert_renderer.render(self._content_rect)
     self._draw_camera_and_steer_controls()
