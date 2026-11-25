@@ -74,3 +74,14 @@ def test_line_carries_its_volume():
   assert p.handle_request({**request(["Stop sign."]), "volume": 40}, now=now) and p.volume == 40
   assert p.handle_request(request(["Stop sign."]), now=now) and p.volume is None  # falls back to the setting
   assert p.handle_request({**request(["Stop sign."]), "volume": "loud"}, now=now) and p.volume is None
+
+
+def test_chime_is_shared_and_quieter_than_the_voice():
+  p = NarrationPlayer(48000)
+  chime = p.build("voice_a", ["[chime]"])
+  assert 0.5 < len(chime) / 48000 < 1.0
+  assert p.build("voice_b", ["[chime]"]) is not None  # same file for every voice
+  voice = p.build("voice_a", ["It's"])
+  assert np.abs(chime).max() < 0.5 * np.abs(voice).max()
+  line = p.build("voice_a", ["[chime]", "It's", "8", "A.M."])
+  assert len(line) > len(chime) + len(voice)

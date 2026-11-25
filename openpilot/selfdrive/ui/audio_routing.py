@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from openpilot.common.basedir import BASEDIR
-from openpilot.selfdrive.ui.narration_text import clip_name, pause_after
+from openpilot.selfdrive.ui.narration_text import CHIME, CHIME_FILE, clip_name, pause_after
 
 ASOUND_CARDS = Path("/proc/asound/cards")
 NARRATION_DIR = Path(BASEDIR) / "openpilot" / "selfdrive" / "assets" / "sounds" / "narration"
@@ -73,9 +73,10 @@ class NarrationPlayer:
     self.volume: int | None = None  # % sent with the current line, overrides the DriveNarrationVolume setting
 
   def _clip(self, voice: str, text: str) -> np.ndarray:
-    key = (voice, text)
+    key = (voice, text) if text != CHIME else ("", CHIME)
     if key not in self._cache:
-      x, rate = _read_clip(self.clip_dir / voice / f"{clip_name(text)}.wav")
+      path = self.clip_dir / CHIME_FILE if text == CHIME else self.clip_dir / voice / f"{clip_name(text)}.wav"
+      x, rate = _read_clip(path)
       self._cache[key] = _resample(x, rate, self.sample_rate)
     return self._cache[key]
 

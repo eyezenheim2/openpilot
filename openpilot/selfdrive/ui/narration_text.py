@@ -142,12 +142,15 @@ def greeting_choices(hour: int) -> list[str]:
 # quarter-hour time announcement: "It's" + hour (+ minutes) + "A.M."/"P.M." ("A.M." is what Piper reads as "ay em")
 TIME_PREFIX = "It's"
 TIME_AM, TIME_PM = "A.M.", "P.M."
+CHIME = "[chime]"  # soft two-note chime, shared by all voices (narration/chime.wav, made by tools/narration/make_voices.py)
+CHIME_FILE = "chime.wav"
+PAUSE_AFTER_CHIME = 0.15  # s between the chime and the voice
 
 
 def time_parts(hour: int, minute: int) -> list[str]:
-  """Spoken time on a 12-hour clock: (15, 30) -> ["It's", "3", "30", "P.M."], (8, 0) -> ["It's", "8", "A.M."]."""
+  """Chime, then the time on a 12-hour clock: (15, 30) -> [CHIME, "It's", "3", "30", "P.M."], (8, 0) -> [CHIME, "It's", "8", "A.M."]."""
   h12 = hour % 12 or 12
-  return [TIME_PREFIX, str(h12)] + ([str(minute)] if minute else []) + [TIME_AM if hour < 12 else TIME_PM]
+  return [CHIME, TIME_PREFIX, str(h12)] + ([str(minute)] if minute else []) + [TIME_AM if hour < 12 else TIME_PM]
 
 
 def time_caption(hour: int, minute: int) -> str:
@@ -195,11 +198,13 @@ def spoken_parts(msg: Msg, value: int = 0) -> list[str]:
 
 
 def pause_after(part: str) -> float:
+  if part == CHIME:
+    return PAUSE_AFTER_CHIME
   return PAUSE_AFTER_SENTENCE if part[-1] in ".," else PAUSE_IN_SENTENCE
 
 
 def all_clip_texts() -> list[str]:
-  """Every clip a voice needs."""
+  """Every clip a voice needs (the shared chime is separate)."""
   phrases = {p for parts in SPOKEN.values() for p in parts if p != "{n}"}
   phrases |= {g for lines in GREETINGS.values() for g in lines}
   phrases |= {TIME_PREFIX, TIME_AM, TIME_PM}

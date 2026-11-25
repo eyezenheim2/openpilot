@@ -47,6 +47,20 @@ def finish(x: np.ndarray, rate: int) -> np.ndarray:
   return (x / (np.abs(x).max() + 1e-9) * PEAK * 32767).astype(np.int16)
 
 
+def make_chime() -> np.ndarray:
+  """Soft two-note chime (G5 then C6, rising), bell-like decay, ~0.75 s, peak ~40% of the voice clips."""
+  t = np.arange(int(0.75 * SAMPLE_RATE)) / SAMPLE_RATE
+  out = np.zeros_like(t)
+  for start, freq in ((0.0, 783.99), (0.16, 1046.5)):
+    u = np.clip(t - start, 0, None)
+    on = t >= start
+    attack = np.minimum(u / 0.008, 1.0)  # no click
+    tone = np.sin(2 * np.pi * freq * u) + 0.25 * np.sin(2 * np.pi * 2 * freq * u) * np.exp(-u * 9)  # touch of overtone
+    out += on * attack * np.exp(-u * 5.5) * tone
+  out *= np.minimum(1.0, (t[-1] - t) / 0.05)  # fade the tail to silence
+  return (out / np.abs(out).max() * 0.36 * 32767).astype(np.int16)
+
+
 def main() -> None:
   ap = argparse.ArgumentParser()
   ap.add_argument("model", help="Piper LibriTTS model (.onnx, with its .onnx.json next to it)")
@@ -58,6 +72,13 @@ def main() -> None:
   text = load_text_module()
   model = PiperVoice.load(args.model)
   texts = text.all_clip_texts()
+
+  os.makedirs(OUT_DIR, exist_ok=True)
+  with wave.open(os.path.join(OUT_DIR, text.CHIME_FILE), "wb") as wf:  # deterministic: same file every run
+    wf.setnchannels(1)
+    wf.setsampwidth(2)
+    wf.setframerate(SAMPLE_RATE)
+    wf.writeframes(make_chime().tobytes())
 
   for voice_dir, label, speaker in text.VOICES:
     if args.voice and voice_dir not in args.voice:
