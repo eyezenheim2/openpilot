@@ -239,9 +239,12 @@ class AugmentedRoadView(CameraView):
     self._control_press = (rl.get_time(), mouse_pos.x, mouse_pos.y)
 
   def _handle_mouse_release(self, mouse_pos: MousePos):
-    # The bookmark swipe has priority over HUD gestures.
+    # The bookmark swipe has priority over HUD gestures. A left swipe also opens the narration volume bar;
+    # the bookmark still saves as before (only past its threshold), and its icon draws over the bar.
     if self._bookmark_icon.interacting():
       self._control_press = None
+      if ui_state.started:
+        self._open_volume_controls(rl.get_time())
       return
 
     start = self._control_press
@@ -273,12 +276,9 @@ class AugmentedRoadView(CameraView):
       self._planted_controls_until = now + HUD_CONTROLS_SECONDS
       return
 
-    # Swipe up to open the narration volume bar; it closes on its own after a few seconds.
+    # Swipe up (or left, see above) to open the narration volume bar; it closes on its own after a few seconds.
     if -dy >= PLANTED_SWIPE_MIN_DY and abs(dx) < -dy:
-      self._offset_controls_until = 0.0
-      self._steer_ratio_controls_until = 0.0
-      self._planted_controls_until = 0.0
-      self._volume_controls_until = now + HUD_CONTROLS_SECONDS
+      self._open_volume_controls(now)
       return
 
     if abs(dx) > 30 or abs(dy) > 30:
@@ -797,6 +797,12 @@ class AugmentedRoadView(CameraView):
     rl.draw_text_ex(font, status,
                     rl.Vector2(rect.x + (rect.width - status_measured.x) / 2, top + height * 0.72),
                     status_size, 0, rl.WHITE)
+
+  def _open_volume_controls(self, now: float) -> None:
+    self._offset_controls_until = 0.0
+    self._steer_ratio_controls_until = 0.0
+    self._planted_controls_until = 0.0
+    self._volume_controls_until = now + HUD_CONTROLS_SECONDS
 
   @staticmethod
   def _narration_volume() -> int:
