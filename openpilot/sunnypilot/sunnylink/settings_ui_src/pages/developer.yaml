@@ -220,8 +220,8 @@ sections:
   - key: DriveNarrationTime
     widget: toggle
     title: Time Announcements
-    description: Say the time every quarter hour while driving ("It's three fifteen P.M."), in a quiet moment, never over a caption
-      or an openpilot alert.
+    description: In stop-and-go traffic, a soft chime and the time ("It's twelve twenty-two P.M.") while you're stopped behind
+      a car, at most once per quarter hour. Never on the open road, never over a caption or an openpilot alert.
     enablement:
     - type: param
       key: DriveNarrationVoice

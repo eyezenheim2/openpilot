@@ -147,10 +147,15 @@ CHIME_FILE = "chime.wav"
 PAUSE_AFTER_CHIME = 0.15  # s between the chime and the voice
 
 
+TIME_OH = "oh"  # "eight oh five"
+
+
 def time_parts(hour: int, minute: int) -> list[str]:
-  """Chime, then the time on a 12-hour clock: (15, 30) -> [CHIME, "It's", "3", "30", "P.M."], (8, 0) -> [CHIME, "It's", "8", "A.M."]."""
+  """Chime, then the time on a 12-hour clock: (15, 22) -> [CHIME, "It's", "3", "22", "P.M."],
+  (8, 5) -> [CHIME, "It's", "8", "oh", "5", "A.M."], (8, 0) -> [CHIME, "It's", "8", "A.M."]."""
   h12 = hour % 12 or 12
-  return [CHIME, TIME_PREFIX, str(h12)] + ([str(minute)] if minute else []) + [TIME_AM if hour < 12 else TIME_PM]
+  mins = [] if minute == 0 else [TIME_OH, str(minute)] if minute < 10 else [str(minute)]
+  return [CHIME, TIME_PREFIX, str(h12)] + mins + [TIME_AM if hour < 12 else TIME_PM]
 
 
 def time_caption(hour: int, minute: int) -> str:
@@ -207,7 +212,7 @@ def all_clip_texts() -> list[str]:
   """Every clip a voice needs (the shared chime is separate)."""
   phrases = {p for parts in SPOKEN.values() for p in parts if p != "{n}"}
   phrases |= {g for lines in GREETINGS.values() for g in lines}
-  phrases |= {TIME_PREFIX, TIME_AM, TIME_PM}
+  phrases |= {TIME_PREFIX, TIME_AM, TIME_PM, TIME_OH}
   return sorted(phrases) + [str(n) for n in NUMBERS]
 
 
@@ -242,3 +247,30 @@ class SpeechTrigger:
       return None
     self.last_spoken[msg] = (now, value)
     return parts
+
+
+class StopAndGo:
+  """Stop-and-go traffic: at least STOPS_NEEDED stops in the last STOP_WINDOW seconds and nothing faster than
+  FAST_SPEED for the last FAST_WINDOW seconds. A single stop at a light or highway driving doesn't count."""
+  STOP_SPEED = 0.5  # m/s: stopped
+  MOVING_SPEED = 2.0  # m/s: has to get going again before the next stop counts
+  STOPS_NEEDED = 2
+  STOP_WINDOW = 300.0  # s
+  FAST_SPEED = 20.0  # m/s (~45 mph)
+  FAST_WINDOW = 120.0  # s
+
+  def __init__(self):
+    self.stops: list[float] = []
+    self.moving = True
+    self.last_fast = -1e9
+
+  def update(self, v_ego: float, now: float) -> bool:
+    if v_ego > self.FAST_SPEED:
+      self.last_fast = now
+    if v_ego > self.MOVING_SPEED:
+      self.moving = True
+    elif v_ego < self.STOP_SPEED and self.moving:
+      self.moving = False
+      self.stops.append(now)
+    self.stops = [t for t in self.stops if now - t <= self.STOP_WINDOW]
+    return len(self.stops) >= self.STOPS_NEEDED and now - self.last_fast > self.FAST_WINDOW

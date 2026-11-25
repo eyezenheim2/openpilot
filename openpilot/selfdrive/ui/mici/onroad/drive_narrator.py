@@ -27,12 +27,11 @@ from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.narration_text import (Msg, TEXT, VOICES, SpeechTrigger,
-                                                               greeting_choices, spoken_parts, time_caption, time_parts)
+                                                               greeting_choices, spoken_parts, time_caption, time_parts, StopAndGo)
 
 NARRATION_PARAM = "DriveNarration"
 GREETING_DELAY = 1.5  # s after openpilot has loaded (controls and model running) before the onroad greeting
 GREETING_TZ = ZoneInfo("America/Los_Angeles")  # same zone as the HUD clock
-TIME_WINDOW_MIN = 2  # the quarter-hour time is said within this many minutes of :00/:15/:30/:45, or skipped
 TIME_QUIET_S = 3.0  # and only once nothing has been said for this long
 TIME_CAPTION_S = 3.0  # s the "It's · 3:15" caption stays up (a driving caption takes its place right away)
 PLANTED_STEERING_PARAM = "PlantedSteering"
@@ -429,6 +428,7 @@ class DriveNarrator(Widget):
     self._greeted = False
     self._loaded_at: float | None = None
     self._time_on = True
+    self._traffic = StopAndGo()
     self._last_said_at = -1e9
     self._time_announced: tuple[int, int, int] | None = None  # (day, hour, quarter) already announced
 
@@ -547,26 +547,23 @@ class DriveNarrator(Widget):
       self._greeted = True
       self._say([random.choice(greeting_choices(datetime.now(GREETING_TZ).hour))])
 
-  def _update_time(self, now: float) -> None:
-    """Say the time at each quarter hour while onroad, in a quiet moment (no recent line, no openpilot alert)."""
-    if not (ui_state.started and self._voice and self._time_on and self._loaded_at is not None):
+  def _update_time(self, now: float, i: NarratorInputs, in_traffic: bool) -> None:
+    """In stop-and-go traffic, say the exact time once per quarter hour while stopped behind a car, in a quiet moment
+    (no recent line, no openpilot alert, after the greeting)."""
+    if not (self._voice and self._time_on and self._greeted):
+      return
+    stopped_behind_car = (i.standstill or i.v_ego < StopAndGo.STOP_SPEED) and i.lead_present
+    if not (in_traffic and stopped_behind_car):
       return
     t = datetime.now(GREETING_TZ)
-    if t.minute % 15 >= TIME_WINDOW_MIN:
-      return
     key = (t.toordinal(), t.hour, t.minute // 15)
-    if key == self._time_announced:
-      return
-    if self._time_announced is None and not self._greeted:
-      return  # let the greeting go first
-    if now - self._last_said_at < TIME_QUIET_S:
+    if key == self._time_announced or now - self._last_said_at < TIME_QUIET_S:
       return
     if ui_state.sm['selfdriveState'].alertSize != log.SelfdriveState.AlertSize.none:
       return
     self._time_announced = key
-    quarter = t.minute - t.minute % 15
-    self._say(time_parts(t.hour, quarter))
-    self._time_caption = ("It's", time_caption(t.hour, quarter))
+    self._say(time_parts(t.hour, t.minute))
+    self._time_caption = ("It's", time_caption(t.hour, t.minute))
     self._time_caption_until = now + TIME_CAPTION_S
 
   def _render(self, rect: rl.Rectangle) -> None:
@@ -584,16 +581,18 @@ class DriveNarrator(Widget):
       self._voice_dir = VOICES[voice_id][0] if 0 <= voice_id < len(VOICES) else VOICES[0][0]
 
     self._update_greeting(now)
-    self._update_time(now)
 
     sm = ui_state.sm
     if not self._enabled or not ui_state.started or sm.recv_frame['carControl'] < ui_state.started_frame:
       self._logic.reset()
       self._speech = SpeechTrigger()
+      self._traffic = StopAndGo()
       self._alpha = 0.0
       return
 
-    msg = self._logic.update(self._inputs(), now)
+    inputs = self._inputs()
+    msg = self._logic.update(inputs, now)
+    self._update_time(now, inputs, self._traffic.update(inputs.v_ego, now))
     # stay out from under openpilot's own alerts
     if sm['selfdriveState'].alertSize != log.SelfdriveState.AlertSize.none:
       msg = Msg.NONE
@@ -602,11 +601,12 @@ class DriveNarrator(Widget):
       self._say(parts)
 
     visible = msg != Msg.NONE
-    if visible:
-      self._shown = (*fill_text(msg, self._logic.value), ACCENT[msg])
-    elif (self._time_caption is not None and now < self._time_caption_until and
-          sm['selfdriveState'].alertSize == log.SelfdriveState.AlertSize.none):
+    time_up = (self._time_caption is not None and now < self._time_caption_until and
+               sm['selfdriveState'].alertSize == log.SelfdriveState.AlertSize.none)
+    if time_up and msg in (Msg.NONE, Msg.WAITING):  # the time is said while waiting in traffic: show it over "Waiting for"
       self._shown, visible = (*self._time_caption, TIME_ACCENT), True
+    elif visible:
+      self._shown = (*fill_text(msg, self._logic.value), ACCENT[msg])
     target = 1.0 if visible else 0.0
     self._alpha += (target - self._alpha) * (0.35 if target else 0.15)
     if self._alpha < 0.02 or self._shown is None:

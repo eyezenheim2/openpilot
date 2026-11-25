@@ -2,7 +2,7 @@ from pathlib import Path
 
 from openpilot.selfdrive.ui.narration_text import (CHIME, CHIME_FILE, GREETINGS, Msg, NOT_SPOKEN, NUMBERS, SPOKEN, TEXT, VOICES, SpeechTrigger,
                                                                all_clip_texts, clip_name, greeting_band, greeting_choices, spoken_parts,
-                                                     time_caption, time_parts)
+                                                     time_caption, time_parts, StopAndGo)
 
 CLIP_ROOT = Path(__file__).resolve().parents[2] / "assets" / "sounds" / "narration"
 
@@ -81,14 +81,46 @@ def test_planted_shown_not_spoken():
 
 
 def test_time_parts():
-  assert time_parts(15, 15) == [CHIME, "It's", "3", "15", "P.M."]
+  assert time_parts(15, 22) == [CHIME, "It's", "3", "22", "P.M."]
+  assert time_parts(8, 5) == [CHIME, "It's", "8", "oh", "5", "A.M."]
   assert time_parts(8, 0) == [CHIME, "It's", "8", "A.M."]
   assert time_parts(0, 0) == [CHIME, "It's", "12", "A.M."]  # midnight
   assert time_parts(12, 30) == [CHIME, "It's", "12", "30", "P.M."]  # noon is P.M.
-  assert time_parts(21, 45) == [CHIME, "It's", "9", "45", "P.M."]
-  assert time_caption(8, 0) == "8:00 AM" and time_caption(12, 15) == "12:15 PM" and time_caption(0, 45) == "12:45 AM"
+  assert time_caption(8, 5) == "8:05 AM" and time_caption(12, 22) == "12:22 PM" and time_caption(0, 45) == "12:45 AM"
   texts = set(all_clip_texts()) | {CHIME}
   for hour in range(24):
-    for minute in (0, 15, 30, 45):
+    for minute in range(60):
       assert set(time_parts(hour, minute)) <= texts, (hour, minute)  # every part has a clip
   assert (CLIP_ROOT / CHIME_FILE).is_file()
+
+
+def run_traffic(speeds, dt=0.5):
+  """speeds: list of (m/s, seconds). Returns the in-traffic flag at the end."""
+  sg, t, out = StopAndGo(), 0.0, False
+  for v, dur in speeds:
+    for _ in range(round(dur / dt)):
+      out = sg.update(v, t)
+      t += dt
+  return out
+
+
+def test_stop_and_go_detected():
+  crawl = [(6.0, 20), (0.0, 15)]
+  assert run_traffic([(25.0, 30)] + [(10.0, 130)] + crawl * 2)  # highway, slowed down, then two stops
+
+
+def test_single_stop_is_not_traffic():
+  assert not run_traffic([(15.0, 60), (0.0, 30)])
+
+
+def test_recent_highway_speed_is_not_traffic():
+  assert not run_traffic([(6.0, 20), (0.0, 15), (25.0, 30), (6.0, 20), (0.0, 15)])
+
+
+def test_old_stops_expire():
+  assert not run_traffic([(6.0, 20), (0.0, 15), (12.0, 400), (0.0, 15)])
+
+
+def test_creeping_does_not_count_as_new_stops():
+  # inching forward at walking pace between stops doesn't add stops
+  assert not run_traffic([(10.0, 130), (0.0, 10), (1.0, 5), (0.0, 10), (1.0, 5), (0.0, 10)])
