@@ -166,6 +166,16 @@ sections:
     title: Planted Steering
     description: Firmer, less floaty steering. Stronger curve feedforward, tighter lane hold, and damping against weave.
       Applies within about a second.
+- id: drive_narration
+  title: Drive Narration
+  description: Short captions on the driving screen that say what openpilot is doing and why.
+  items:
+  - key: DriveNarration
+    widget: toggle
+    title: Drive Narration
+    description: 'One-line captions under the speed, e.g. "Car ahead slowing · I''m slowing down", "Car cutting in · Making
+      room", "Stop sign · Stopping", "Curve ahead · Easing off". Hidden whenever openpilot shows its own alert. Driving captions
+      need openpilot longitudinal control.'
 - id: lane_centering
   title: StarPilot Lane Centering (SPLC)
   description: Experimental confidence-gated lane centering ported from StarPilot. Biases the model command toward the detected

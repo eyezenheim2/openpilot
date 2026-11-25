@@ -2084,6 +2084,19 @@
           ]
         },
         {
+          "id": "drive_narration",
+          "title": "Drive Narration",
+          "description": "Short captions on the driving screen that say what openpilot is doing and why.",
+          "items": [
+            {
+              "key": "DriveNarration",
+              "widget": "toggle",
+              "title": "Drive Narration",
+              "description": "One-line captions under the speed, e.g. \"Car ahead slowing \u00b7 I'm slowing down\", \"Car cutting in \u00b7 Making room\", \"Stop sign \u00b7 Stopping\", \"Curve ahead \u00b7 Easing off\". Hidden whenever openpilot shows its own alert. Driving captions need openpilot longitudinal control."
+            }
+          ]
+        },
+        {
           "id": "lane_centering",
           "title": "StarPilot Lane Centering (SPLC)",
           "description": "Experimental confidence-gated lane centering ported from StarPilot. Biases the model command toward the detected lane center while remaining subject to normal curvature and jerk limits.",
