@@ -4,6 +4,7 @@ Everything comes from what openpilot actually perceives through the road camera:
   - road surface between the model's road edges
   - lane lines from the model (fading with their confidence)
   - the planned path (teal, like the sim) up to the lead car
+  - our car (silver/black crossover) and the other cars (lavender rounded shells), styled after a robotaxi view
   - the lead car from the vision model (modelV2.leadsV3), at its measured distance and lateral position
   - on the 11th-gen Accord, the other cars the car's own sensors track (decoded by honda_objectd from the
     driver-assist bus and published on customReservedRawData1, UI only)
@@ -34,26 +35,25 @@ LINE = (204, 214, 227)
 PATH = (40, 182, 154)  # sim's teal path
 PATH_ALPHA = 0.38
 
-EGO_PAINT = (246, 248, 247)  # sim default: pearl white
-# other cars: real-world paint colours, weighted like a typical road (lots of white/silver/grey), all kept light
-# enough to read on the dark road (no true black). Each new car gets one, plus a body style, for as long as it's tracked.
-TRAFFIC_PAINTS = [  # (rgb, weight)
-  ((246, 248, 247), 4),  # white
-  ((196, 202, 208), 4),  # silver
-  ((132, 142, 152), 3),  # grey
-  ((196, 36, 44), 2),    # red
-  ((46, 96, 196), 2),    # blue
-  ((122, 168, 214), 1),  # light blue
-  ((206, 190, 158), 1),  # champagne
-  ((62, 128, 88), 1),    # green
-  ((228, 122, 40), 1),   # orange
-]
+# our car: compact crossover, silver lower body, glossy near-black upper body and panoramic roof, coral light bar
+EGO_LOWER = (150, 155, 163)
+EGO_UPPER = (30, 32, 37)
+EGO_GLASS = (16, 18, 22)
+EGO_ACCENT = (244, 120, 104)  # coral light bar across the front of the roof
+# other cars (camera lead and the car's own tracked objects): soft rounded "pills" in translucent lavender, no detail,
+# like the reference robotaxi view. Size still varies with a body style per car (sedan / SUV / hatch proportions).
+SHELL_SIDE = (182, 170, 248)
+SHELL_TOP = (226, 220, 255)
+SHELL_ALPHA = 0.9
+LEAD_BRAKE = (255, 138, 150)  # rear of the lead glows coral-pink while it brakes
+LEAD_BRAKE_ACCEL = -1.0  # m/s2: model lead acceleration that counts as braking
 BODY_STYLES = [('sedan', 3), ('suv', 3), ('hatch', 2)]  # (body, weight)
-HALO = (190, 210, 235)  # soft light pool under other cars
+SHADOW_OFFSET = (0.55, -0.45)  # m (right, forward): shadows fall right and back, away from the light
+SHADOW_ALPHA = 0.32
 DISPLAY_DIST_SCALE = 0.5  # other cars are drawn at this fraction of their real gap to us, so they sit where they can be seen
 MIN_DISPLAY_GAP = 1.0  # m of drawn gap kept between our bumper and the nearest car
 IN_LANE_Y = 1.4  # m from our path: a car this close sideways is in our lane
-FAR_BOOST = (10.0, 40.0, 1.6)  # other cars drawn up to 1.6x larger with distance (position unchanged) so they read on the small screen
+FAR_BOOST = (15.0, 60.0, 1.25)  # other cars drawn up to 1.25x larger with distance (position unchanged) so they read on the small screen
 GLASS = (52, 71, 78)
 UNDER = (59, 73, 75)
 TIRE = (38, 49, 49)
@@ -64,7 +64,8 @@ FOG_BANDS = 10  # fog is stepped so long ribbons go out in a few draw calls
 BEHIND = 12.0  # m of road drawn behind us (the virtual camera sits further back than this)
 EGO_CENTER_X = -1.2  # the camera sits near the windshield, the car's centre is behind it
 CAR_LEN = 4.65  # our car (sedan)
-BODY_LEN = {'sedan': 4.65, 'suv': 4.75, 'hatch': 4.25}
+SHELL_SIZE = {'sedan': (4.65, 1.86, 1.45), 'suv': (4.8, 1.95, 1.75), 'hatch': (4.25, 1.8, 1.5)}  # length, width, height
+EGO_LEN = 4.5
 LEAD_MIN_PROB = 0.5
 NEAR = 0.5  # m: anything closer to the virtual camera is skipped
 RADAR_TO_CAMERA = 1.52  # m, object distances are from the front bumper, model distances from the camera
@@ -80,11 +81,12 @@ SIGN_BOOST = 2.2  # drawn larger, like the other cars, so it reads on the small 
 OBJ_TIMEOUT = 0.4  # s without an update before a tracked car fades out
 LEAD_MATCH_X, LEAD_MATCH_Y = 6.0, 1.8  # m: a tracked car this close to the camera lead is the same car
 
-# Bird's-eye chase camera, relative to our car (metres)
-CAM_HEIGHT = 14.0
-CAM_BACK = 13.8
-CAM_LOOK_AHEAD = 7.0
-CAM_FOVY = 46.0
+# Chase camera, relative to our car (metres), matched to the reference robotaxi view: ~9 m up and 11 m back, tilted
+# ~37 deg down with a wide lens, so our car sits mid-screen with traffic ahead and on both sides in view
+CAM_HEIGHT = 9.0
+CAM_BACK = 11.0
+CAM_LOOK_AHEAD = 0.9
+CAM_FOVY = 60.0
 
 # Flat low-poly lighting: sun from above, slightly left/front
 LIGHT = np.array([-0.35, 0.85, -0.4])
@@ -148,7 +150,8 @@ class TopView:
   def __init__(self):
     self._odometer = 0.0
     self._cam: _Camera | None = None
-    self._bodies = {b: self._build_car_template(b) for b in BODY_LEN}
+    self._bodies = {b: self._build_shell_template(*SHELL_SIZE[b]) for b in SHELL_SIZE}
+    self._bodies['ego'] = self._build_car_template('ego')
     self._rng = random.Random()
 
     self._path = np.zeros((0, 2), dtype=np.float32)
@@ -163,6 +166,7 @@ class TopView:
     self._lead_alpha = FirstOrderFilter(0.0, 0.15, dt)
     self._lead_look = self._new_look()  # (paint, body) of the camera lead, re-picked when it becomes a different car
     self._lead_born = 0.0
+    self._lead_brake = FirstOrderFilter(0.0, 0.2, dt)
     self._camera_offset = 0.0
     self._counter = 0
     self._objects: dict[int, dict] = {}  # id -> {'x', 'y' filters, 'alpha' filter, 'seen' time}
@@ -206,6 +210,8 @@ class TopView:
       self._lead_x.update(x)
       self._lead_y.update(y)
     self._lead_alpha.update(1.0 if visible else 0.0)
+    lead_accel = float(lead.a[0]) if visible and len(lead.a) else 0.0
+    self._lead_brake.update(1.0 if lead_accel < LEAD_BRAKE_ACCEL else 0.0)
     self._update_objects()
 
   def _update_objects(self):
@@ -237,14 +243,9 @@ class TopView:
         del self._objects[oid]
 
   def _new_look(self) -> tuple:
-    """Random (paint, body) for a newly seen car, avoiding the colours already on screen when there's a choice."""
-    in_use = {o['look'][0] for o in getattr(self, '_objects', {}).values() if o['alpha'].x > 0.02}
-    if getattr(self, '_lead_alpha', None) is not None and self._lead_alpha.x > 0.02:
-      in_use.add(self._lead_look[0])
-    paints = [(c, w) for c, w in TRAFFIC_PAINTS if c not in in_use] or TRAFFIC_PAINTS
-    paint = self._rng.choices([c for c, _ in paints], [w for _, w in paints])[0]
+    """(paint, body) for a newly seen car: one lavender style for all, with a random body size (sedan / SUV / hatch)."""
     body = self._rng.choices([b for b, _ in BODY_STYLES], [w for _, w in BODY_STYLES])[0]
-    return paint, body
+    return SHELL_SIDE, body
 
   # ---------------------------------------------------------------- helpers
   @staticmethod
@@ -316,7 +317,22 @@ class TopView:
         normals.append(n)
         keys.append(key)
 
-    if body == 'suv':
+    if body == 'ego':
+      # always seen from the same angle (behind, above), so it's drawn in this order rather than depth-sorted:
+      # wheels, then the body, then what sits on it, then the glasshouse
+      box(0, 0.34, 0, 1.78, 0.14, 4.2, UNDER)
+      for z in (1.4, -1.42):
+        for s in (-1, 1):
+          box(s * 0.93, 0.36, z, 0.24, 0.72, 0.72, TIRE)
+      box(0, 0.68, 0, 1.9, 0.62, EGO_LEN, EGO_LOWER)  # silver body, its shoulders visible from above
+      box(0, 1.01, 1.55, 1.7, 0.04, 1.15, EGO_UPPER)  # black hood panel
+      for s in (-1, 1):
+        box(s * 1.04, 1.08, 0.72, 0.24, 0.12, 0.28, EGO_UPPER)  # mirrors
+      box(0, 1.66, 0.66, 1.36, 0.08, 0.2, EGO_ACCENT)  # coral light bar on the front edge of the roof
+      box(0, 0.94, -EGO_LEN / 2 - 0.01, 1.56, 0.07, 0.03, 'brake')  # full-width tail light
+      profile = [(-1.95, 0.99), (-1.75, 1.6), (0.55, 1.63), (1.18, 1.0)]  # glossy black glasshouse and roof
+      half = 0.74
+    elif body == 'suv':
       box(0, 0.42, 0, 1.84, 0.18, 4.5, UNDER)
       box(0, 0.74, 0, 1.92, 0.78, 4.75, 'paint')
       box(0, 1.17, 1.66, 1.8, 0.1, 1.3, 'paint')  # hood
@@ -372,10 +388,55 @@ class TopView:
         n = -n
       quads.append(f)
       normals.append(n)
-      keys.append(GLASS)
+      keys.append(EGO_GLASS if body == 'ego' else GLASS)
 
     normals = np.array(normals)
     shade = 0.55 + 0.45 * np.clip(normals @ LIGHT, 0.0, 1.0)
+    return np.array(quads, dtype=np.float64), normals, keys, shade
+
+  @staticmethod
+  def _build_shell_template(length: float, width: float, height: float):
+    """Rounded pill (stadium-shaped in plan, softened top edge) in local coords around its centre (world axes).
+    Same layout as the car template; keys 'shell' (sides), 'top' and 'rear' (the back end, which glows when braking)."""
+    def ring(hx, hz, r, y, n=4):
+      pts = []
+      for cx, cz, a0 in ((hx - r, hz - r, 0.0), (-(hx - r), hz - r, 90.0), (-(hx - r), -(hz - r), 180.0), (hx - r, -(hz - r), 270.0)):
+        for j in range(n + 1):
+          a = math.radians(a0 + 90.0 * j / n)
+          pts.append((cx + r * math.cos(a), y, -(cz + r * math.sin(a))))  # sim z forward -> world -Z
+      return np.array(pts)
+
+    hx, hz = width / 2, length / 2
+    r = hx * 0.82  # strongly rounded ends
+    bevel = 0.16
+    lo, mid, top = ring(hx, hz, r, 0.04), ring(hx, hz, r, height - bevel), ring(hx - bevel, hz - bevel, r - bevel, height)
+    centre = np.array([0.0, height / 2, 0.0])
+    quads, normals, keys = [], [], []
+
+    def add(f, key):
+      f = np.array(f)
+      n = np.cross(f[1] - f[0], f[2] - f[0])
+      if np.linalg.norm(n) < 1e-9:
+        n = np.cross(f[2] - f[0], f[3] - f[0])
+      n /= np.linalg.norm(n)
+      if np.dot(n, f.mean(axis=0) - centre) < 0:
+        n = -n
+      quads.append(f)
+      normals.append(n)
+      keys.append(key)
+
+    m = len(lo)
+    for i in range(m):
+      j = (i + 1) % m
+      rear = (lo[i][2] + lo[j][2]) / 2 > hz - r  # world +Z is backwards
+      add([lo[i], lo[j], mid[j], mid[i]], 'rear' if rear else 'shell')
+      add([mid[i], mid[j], top[j], top[i]], 'shell')
+    c = np.array([0.0, height, 0.0])
+    for i in range(m):  # flat top as a fan of degenerate quads (it's convex)
+      j = (i + 1) % m
+      add([c, top[i], top[j], top[j]], 'top')
+    normals = np.array(normals)
+    shade = 0.78 + 0.22 * np.clip(normals @ LIGHT, 0.0, 1.0)  # soft, bright lighting
     return np.array(quads, dtype=np.float64), normals, keys, shade
 
   def _draw_car(self, x_center: float, y: float, paint, alpha: float, brake: bool, scale: float = 1.0, body: str = 'sedan'):
@@ -389,23 +450,19 @@ class TopView:
     scr, z = scr.reshape(-1, 4, 2), z.reshape(-1, 4)
     visible &= z.min(axis=1) >= NEAR
     dist = np.linalg.norm(to_eye, axis=1)
-    for i in np.argsort(-dist):
+    order = range(len(quads)) if body == 'ego' else np.argsort(-dist)  # ego template is built in drawing order
+    for i in order:
       if not visible[i]:
         continue
       key = keys[i]
-      rgb = paint if key == 'paint' else (BRAKE_ON if brake else BRAKE_OFF) if key == 'brake' else key
+      if key == 'shell' or key == 'rear':
+        rgb = LEAD_BRAKE if (key == 'rear' and brake) else SHELL_SIDE
+      elif key == 'top':
+        rgb = SHELL_TOP
+      else:
+        rgb = paint if key == 'paint' else (BRAKE_ON if brake else BRAKE_OFF) if key == 'brake' else key
       k = shade[i]
       _fan2d(scr[i], _rgba(rgb, alpha, k))
-
-  def _halo(self, x_center: float, y: float, alpha: float, scale: float = 1.0):
-    """Light pool on the road around a car, so it pops against the dark asphalt even when far away."""
-    o = _wp(x_center, y, 0.015)
-    for (hx, hz), a in (((2.2, 4.0), 0.10), ((1.7, 3.3), 0.16)):
-      hx, hz = hx * scale, hz * scale
-      pts = np.array([o + [-hx, 0, -hz], o + [hx, 0, -hz], o + [hx, 0, hz], o + [-hx, 0, hz]])
-      scr, z = self._cam.project(pts)
-      if z.min() >= NEAR:
-        _fan2d(scr, _rgba(HALO, a * alpha))
 
   def _sign_distance(self) -> float:
     """Estimated stop line ahead (model frame x): where the model's plan stops or rolls, a few metres short of it."""
@@ -446,13 +503,19 @@ class TopView:
     rl.draw_text_ex(font, "STOP", rl.Vector2(float(scr[0, 0] - m.x / 2), float(scr[0, 1] - m.y / 2)), size, 0,
                     rl.Color(255, 255, 255, int(255 * alpha)))
 
-  def _shadow(self, x_center: float, y: float, alpha: float, scale: float = 1.0):
-    o = _wp(x_center, y, 0.02)
-    hx, hz = 1.15 * scale, 2.6 * scale
-    pts = np.array([o + [-hx, 0, -hz], o + [hx, 0, -hz], o + [hx, 0, hz], o + [-hx, 0, hz]])
-    scr, z = self._cam.project(pts)
-    if z.min() >= NEAR:
-      _fan2d(scr, rl.Color(0, 0, 0, int(110 * alpha)))
+  def _shadow(self, x_center: float, y: float, alpha: float, scale: float = 1.0, length: float = CAR_LEN):
+    """Soft rounded footprint, offset away from the light: a darker core over a slightly larger, fainter one."""
+    o = _wp(x_center + SHADOW_OFFSET[1] * scale, y + SHADOW_OFFSET[0] * scale, 0.02)
+    for grow, a in ((0.25, 0.45), (0.0, 1.0)):
+      hx, hz = (0.95 + grow) * scale, (length / 2 + grow) * scale
+      r = hx * 0.8
+      ang = np.radians(np.arange(0, 360, 30))
+      cx = np.where(np.cos(ang) >= 0, hx - r, -(hx - r))
+      cz = np.where(np.sin(ang) >= 0, hz - r, -(hz - r))
+      pts = o + np.column_stack((cx + r * np.cos(ang), np.zeros(ang.size), cz + r * np.sin(ang)))
+      scr, z = self._cam.project(pts)
+      if z.min() >= NEAR:
+        _fan2d(scr, rl.Color(0, 0, 0, int(255 * SHADOW_ALPHA * a * alpha)))
 
   # ---------------------------------------------------------------- render
   def prepare(self, rect: rl.Rectangle):
@@ -516,7 +579,7 @@ class TopView:
 
     # cars to draw: tracked cars from the car's sensors, plus the camera lead unless one of them is that car
     lead_a = self._lead_alpha.x if self._lead_x.initialized else 0.0
-    cars = []  # (x_rear, y, (paint, body), alpha)
+    cars = []  # (x_rear, y, (paint, body), alpha, is_camera_lead)
     lead_matched = False
     for o in self._objects.values():
       x, y, a = o['x'].x, o['y'].x, o['alpha'].x
@@ -529,9 +592,11 @@ class TopView:
         else:
           o['look'] = self._lead_look
         lead_matched = True
-      cars.append((x, y, o['look'], a))
+        cars.append((x, y, o['look'], a, True))
+      else:
+        cars.append((x, y, o['look'], a, False))
     if lead_a > 0.02 and not lead_matched:
-      cars.append((self._lead_x.x, self._lead_y.x, self._lead_look, lead_a))
+      cars.append((self._lead_x.x, self._lead_y.x, self._lead_look, lead_a, True))
 
     # draw other cars closer than they are (DISPLAY_DIST_SCALE of the real gap), keeping their lane:
     # their offset from our path is preserved, so on curves they stay on the road
@@ -544,9 +609,9 @@ class TopView:
         y += float(np.interp(x_d, path[:, 0], path[:, 1]) - np.interp(x, path[:, 0], path[:, 1]))
       return x_d, y
 
-    cars = [(*to_display(x, y), look, a) for x, y, look, a in cars]
+    cars = [(*to_display(x, y), look, a, is_lead) for x, y, look, a, is_lead in cars]
     # the path stops at the nearest drawn car in our lane, whether the camera or the car's sensors reported it
-    in_lane = [x for x, y, _, a in cars if a > 0.5 and path.shape[0] >= 2 and abs(y - float(np.interp(x, path[:, 0], path[:, 1]))) < IN_LANE_Y]
+    in_lane = [x for x, y, _, a, _ in cars if a > 0.5 and path.shape[0] >= 2 and abs(y - float(np.interp(x, path[:, 0], path[:, 1]))) < IN_LANE_Y]
     lead_disp_x = min(in_lane) if in_lane else None
 
     # planned path: teal, from our front bumper to the (drawn) lead, or as far as the model plans
@@ -560,14 +625,15 @@ class TopView:
     cc = sm['carControl']
     braking = sm['carState'].brakePressed or (cc.longActive and cc.actuators.accel < -0.5)
     y0 = float(np.interp(0.0, path[:, 0], path[:, 1])) if path.shape[0] >= 2 else 0.0
-    for x, y, (paint, body), a in sorted(cars, key=lambda c: -c[0]):  # far to near so nearer cars overlap correctly
+    lead_braking = self._lead_brake.x > 0.5
+    for x, y, (paint, body), a, is_lead in sorted(cars, key=lambda c: -c[0]):  # far to near so nearer cars overlap correctly
       near, far, most = FAR_BOOST
       k = 1.0 + (most - 1.0) * min(1.0, max(0.0, (x - near) / (far - near)))
-      cx = x + BODY_LEN[body] * k / 2  # keep the rear bumper where the sensors put it
-      self._halo(cx, y, a, k)
-      self._shadow(cx, y, a, k)
-      self._draw_car(cx, y, paint, a, False, k, body)
-    self._shadow(EGO_CENTER_X, y0, 1.0)
+      length = SHELL_SIZE[body][0]
+      cx = x + length * k / 2  # keep the rear bumper where the sensors put it
+      self._shadow(cx, y, a, k, length)
+      self._draw_car(cx, y, paint, a * SHELL_ALPHA, is_lead and lead_braking, k, body)
+    self._shadow(EGO_CENTER_X, y0, 1.0, 1.0, EGO_LEN)
     sign_a = self._stop_sign_alpha.x
     if sign_a > 0.02:
       sx = self._sign_x.update(self._sign_distance())
@@ -579,4 +645,4 @@ class TopView:
         else:
           y_curb = (float(np.interp(x_d, path[:, 0], path[:, 1])) if path.shape[0] >= 2 else 0.0) + 3.5
         self._draw_stop_sign_post(x_d, y_curb, sign_a, SIGN_BOOST)
-    self._draw_car(EGO_CENTER_X, y0, EGO_PAINT, 1.0, braking)
+    self._draw_car(EGO_CENTER_X, y0, EGO_LOWER, 1.0, braking, 1.0, 'ego')
