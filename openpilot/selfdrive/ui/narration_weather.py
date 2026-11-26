@@ -19,7 +19,6 @@ class Weather:
   temp: float  # current, in the requested unit
   code: int  # WMO weather code
   is_day: bool
-  high: float | None = None  # today's high
   rain_chance: int | None = None  # today's highest precipitation probability, %
 
 
@@ -27,7 +26,7 @@ def request_params(lat: float, lon: float, metric: bool) -> dict:
   return {
     "latitude": round(lat, 3), "longitude": round(lon, 3),  # ~100 m is plenty, and no more precise than needed
     "current": "temperature_2m,weather_code,is_day",
-    "daily": "temperature_2m_max,precipitation_probability_max",
+    "daily": "precipitation_probability_max",
     "temperature_unit": "celsius" if metric else "fahrenheit",
     "timezone": "auto", "forecast_days": 1,
   }
@@ -37,9 +36,8 @@ def parse(data: dict) -> Weather | None:
   try:
     cur = data["current"]
     daily = data.get("daily") or {}
-    highs, rain = daily.get("temperature_2m_max") or [None], daily.get("precipitation_probability_max") or [None]
+    rain = daily.get("precipitation_probability_max") or [None]
     return Weather(temp=float(cur["temperature_2m"]), code=int(cur["weather_code"]), is_day=bool(cur.get("is_day", 1)),
-                   high=None if highs[0] is None else float(highs[0]),
                    rain_chance=None if rain[0] is None else int(rain[0]))
   except (KeyError, TypeError, ValueError, IndexError):
     return None

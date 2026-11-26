@@ -4,14 +4,14 @@ from openpilot.selfdrive.ui.narration_weather import WeatherFetcher, parse, posi
 
 SAMPLE = {
   "current": {"temperature_2m": 58.3, "weather_code": 45, "is_day": 1},
-  "daily": {"temperature_2m_max": [67.1], "precipitation_probability_max": [10]},
+  "daily": {"precipitation_probability_max": [10]},
 }
 
 
 def test_parse():
   w = parse(SAMPLE)
-  assert (w.temp, w.code, w.is_day, w.high, w.rain_chance) == (58.3, 45, True, 67.1, 10)
-  assert parse({"current": {"temperature_2m": 50, "weather_code": 3}}).high is None  # no daily block
+  assert (w.temp, w.code, w.is_day, w.rain_chance) == (58.3, 45, True, 10)
+  assert parse({"current": {"temperature_2m": 50, "weather_code": 3}}).rain_chance is None  # no daily block
   assert parse({}) is None and parse({"current": {"temperature_2m": None, "weather_code": 1}}) is None
 
 

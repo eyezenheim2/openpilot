@@ -133,11 +133,11 @@ def test_muted_lines_still_captioned():
 
 
 def test_weather_parts():
-  assert weather_parts(58.4, 45, True, 67.2, 10) == ["Currently", "58", "degrees and foggy.", "High of", "67", "today."]
-  assert weather_parts(52, 0, False, 67, 10, band="evening") == ["Currently", "52", "degrees and clear."]  # no high at night
-  assert weather_parts(60, 0, True, 72, 10)[2] == "degrees and sunny."
-  assert weather_parts(60, 2, True, 60, 70) == ["Currently", "60", "degrees and partly cloudy.", "Rain is likely later."]
-  assert weather_parts(55, 63, True, 58, 90) == ["Currently", "55", "degrees and raining.", "High of", "58", "today."]  # already wet
+  assert weather_parts(58.4, 45, True, 10) == ["Currently", "58", "degrees and foggy."]
+  assert weather_parts(52, 0, False, 10) == ["Currently", "52", "degrees and clear."]
+  assert weather_parts(60, 0, True, 10)[2] == "degrees and sunny."
+  assert weather_parts(60, 2, True, 70) == ["Currently", "60", "degrees and partly cloudy.", "Rain is likely later."]
+  assert weather_parts(55, 63, True, 90) == ["Currently", "55", "degrees and raining."]  # already wet
   assert weather_parts(0.3, 0, True) == [] and weather_parts(-5, 71, True) == []  # no clip below 1
   assert weather_parts(60, 999, True) == []  # unknown code
 
@@ -146,5 +146,5 @@ def test_weather_parts_have_clips():
   texts = set(all_clip_texts())
   for code in (0, 1, 2, 3, 45, 48, 51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 71, 73, 75, 77, 80, 81, 82, 85, 86, 95, 96, 99):
     for is_day in (True, False):
-      parts = weather_parts(70, code, is_day, 80, 60)
+      parts = weather_parts(70, code, is_day, 60)
       assert parts and set(parts) <= texts, (code, parts)

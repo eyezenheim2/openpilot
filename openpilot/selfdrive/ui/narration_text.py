@@ -139,10 +139,8 @@ def greeting_choices(hour: int) -> list[str]:
   return GREETINGS[greeting_band(hour)] + GREETINGS["any"]
 
 
-# weather, said right after the greeting: "Currently" + temp + condition (+ "High of" + temp) (+ rain warning)
+# weather, said right after the greeting: "Currently" + temp + condition (+ rain warning)
 WEATHER_PREFIX = "Currently"
-WEATHER_HIGH = "High of"
-WEATHER_TODAY = "today."  # "High of 67 today."
 WEATHER_RAIN_LATER = "Rain is likely later."
 WEATHER_RAIN_CHANCE = 50  # % chance today that earns the rain warning
 # condition phrase by WMO weather code (Open-Meteo's weather_code); (day, night)
@@ -166,18 +164,14 @@ def weather_condition(code: int, is_day: bool) -> str | None:
   return None
 
 
-def weather_parts(temp: float, code: int, is_day: bool, high: float | None = None, rain_chance: int | None = None,
-                  band: str = "morning") -> list[str]:
-  """Clip texts for the weather line: (58, 45, True, 67, 10) -> ["Currently", "58", "degrees and foggy.",
-  "High of", "67", "today."].
-  The high is only said in the morning and afternoon; the rain warning only when it isn't wet already.
+def weather_parts(temp: float, code: int, is_day: bool, rain_chance: int | None = None) -> list[str]:
+  """Clip texts for the weather line: (58, 45, True, 10) -> ["Currently", "58", "degrees and foggy."].
+  The rain warning is only said when it isn't wet already.
   Empty when the temperature has no clip (below 1 degree) or the code is unknown."""
   t, condition = round(temp), weather_condition(code, is_day)
   if t not in NUMBERS or condition is None:
     return []
   parts = [WEATHER_PREFIX, str(t), condition]
-  if high is not None and band in ("morning", "afternoon") and round(high) in NUMBERS and round(high) > t:
-    parts += [WEATHER_HIGH, str(round(high)), WEATHER_TODAY]
   if rain_chance is not None and rain_chance >= WEATHER_RAIN_CHANCE and code not in WET_CODES:
     parts.append(WEATHER_RAIN_LATER)
   return parts
@@ -258,7 +252,7 @@ def all_clip_texts() -> list[str]:
   phrases = {p for parts in SPOKEN.values() for p in parts if p != "{n}"}
   phrases |= {g for lines in GREETINGS.values() for g in lines}
   phrases |= {TIME_PREFIX, TIME_AM, TIME_PM, TIME_OH}
-  phrases |= {WEATHER_PREFIX, WEATHER_HIGH, WEATHER_TODAY, WEATHER_RAIN_LATER}
+  phrases |= {WEATHER_PREFIX, WEATHER_RAIN_LATER}
   phrases |= {c for _, conds in WEATHER_CONDITIONS for c in conds}
   return sorted(phrases) + [str(n) for n in NUMBERS]
 

@@ -27,7 +27,7 @@ from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.narration_text import (Msg, TEXT, VOICES, SpeechTrigger,
-                                                               greeting_band, greeting_choices, spoken_parts, time_caption, time_parts,
+                                                               greeting_choices, spoken_parts, time_caption, time_parts,
                                                                weather_parts, StopAndGo)
 from openpilot.selfdrive.ui.narration_weather import WeatherFetcher, position_from_param
 
@@ -561,7 +561,7 @@ class DriveNarrator(Widget):
       hour = datetime.now(GREETING_TZ).hour
       parts = [random.choice(greeting_choices(hour))]
       if self._weather_on and (w := self._weather.result()):
-        parts += weather_parts(w.temp, w.code, w.is_day, w.high, w.rain_chance, greeting_band(hour))
+        parts += weather_parts(w.temp, w.code, w.is_day, w.rain_chance)
       self._say(parts)
 
   def _update_time(self, now: float, i: NarratorInputs, in_traffic: bool) -> None:
