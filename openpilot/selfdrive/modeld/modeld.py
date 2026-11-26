@@ -29,7 +29,7 @@ from msgq.visionipc import VisionIpcClient, VisionBuf
 from opendbc.car.car_helpers import get_demo_car_params
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
-from openpilot.common.hardware.usb import cable_connected
+from openpilot.common.hardware.usb import cable_connected, usb_speaker_present
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import config_realtime_process, DT_MDL
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
@@ -237,6 +237,10 @@ def main(demo=False):
   cloudlog.warning("modeld init")
 
   CHESTNUT = chestnut_compiled() and (chestnut_present() or cable_connected())
+  if CHESTNUT and usb_speaker_present():
+    # the USB speaker shares the port: don't look for the chestnut, run the small model (no "Big Model Failed")
+    cloudlog.warning("USB speaker connected, skipping chestnut")
+    CHESTNUT = False
   if CHESTNUT:
     from tinygrad.runtime.ops_amd import AMDDevice
     AMDDevice.wait_timeout_ms = 3000

@@ -12,7 +12,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.ui.lib.prime_state import PrimeState
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.common.hardware import HARDWARE, PC
-from openpilot.common.hardware.usb import cable_connected, get_usb_state, is_chestnut_usb_id
+from openpilot.common.hardware.usb import cable_connected, get_usb_state, is_chestnut_usb_id, usb_speaker_present
 from openpilot.selfdrive.modeld.helpers import chestnut_compiled
 from openpilot.selfdrive.selfdrived.alertmanager import OFFROAD_ALERTS
 
@@ -219,6 +219,8 @@ class UIState(UIStateSP):
         self.started_frame = self.sm.frame
         self.started_time = time.monotonic()
         self.chestnut_present = self.sm["deviceState"].chestnutPresent or (self.chestnut_compiled and self.usb_connected)
+        if usb_speaker_present():  # modeld skips the chestnut when a USB speaker is connected: no chestnut icon
+          self.chestnut_present = False
 
       for callback in self._offroad_transition_callbacks:
         callback()

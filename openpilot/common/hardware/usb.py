@@ -8,6 +8,7 @@ CHESTNUT_USB_PRODUCT = f"custom {CHESTNUT_FW_VERSION}-CLEAN"
 USB_DEVICES_PATH = Path("/sys/bus/usb/devices")
 TYPEC_CC_ORIENTATION_PATH = Path("/sys/class/power_supply/usb/typec_cc_orientation")
 PRIMARY_USB_CONTROLLER = "a600000.ssusb"
+ASOUND_CARDS_PATH = Path("/proc/asound/cards")
 
 
 def is_chestnut_usb_id(vendor_id: int, product_id: int, include_bootloader: bool = False) -> bool:
@@ -34,6 +35,14 @@ def read_int(path: Path, base: int = 10) -> int:
     return int(path.read_text(), base)
   except (OSError, ValueError, TypeError):
     return 0
+
+
+def usb_speaker_present(cards_path: Path = ASOUND_CARDS_PATH) -> bool:
+  """A USB audio device (speaker, USB-C audio adapter) is registered with ALSA."""
+  try:
+    return "usb" in cards_path.read_text().lower()
+  except OSError:
+    return False
 
 
 def cable_connected() -> bool:
