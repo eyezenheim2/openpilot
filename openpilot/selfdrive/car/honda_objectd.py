@@ -4,9 +4,13 @@
 The car's driver-assist bus (panda bus 1, CAN FD) carries 16 object slots at 0x062..0x080, 64 bytes each, ~15 Hz.
 Fields reverse-engineered from drive logs (see the commit message for how each was checked):
   byte 4      object id (stable for the life of a track)
-  bytes 6-7   distance, little-endian, 0.00625 m/unit (checked against the camera lead: city ~27 m, highway ~100 m)
+  bytes 6-7   distance: low 12 bits, little-endian, 0.053 m/unit, camera frame; the top nibble is a status flag
+              (1 = normal track). Fitted against the camera lead on 9 drive logs: lead_x = 0.05298*raw - 0.15
+              (470 matched samples, 1.5 m residual). The earlier 0.00625 m/unit over all 16 bits squeezed every object
+              into 26-45 m, so nothing ever came alongside.
   bytes 8-9   lateral, little-endian, centre 0x6000, 0.01 m/unit, left positive (r = -1.00 against the camera lead)
-  bytes 10-11 relative speed, little-endian, centre 0x600, ~0.0121 m/s per unit (r = 0.85 against range rate)
+  bytes 10-11 relative speed, little-endian, centre 0x600, roughly 0.096 m/s per unit (r = 0.87 against the rate of
+              change of the corrected distance; approximate, the UI derives speed from distance instead)
 A zero distance means the slot is empty.
 
 Traffic Sign Recognition: the car's camera sends the recognised sign on bus 2, 0x35E, byte 2
@@ -26,11 +30,11 @@ from openpilot.common.swaglog import cloudlog
 
 OBJ_BUS = 1
 OBJ_ADDRS = set(range(0x062, 0x082, 2))
-DIST_SCALE = 0.00625
+DIST_MASK, DIST_SCALE = 0x0FFF, 0.053
 LAT_CENTRE, LAT_SCALE = 0x6000, 0.01
-VREL_CENTRE, VREL_SCALE = 0x600, 0.0121
+VREL_CENTRE, VREL_SCALE = 0x600, 0.096
 MAX_LAT = 15.0  # m; some slots carry other encodings with nonsense lateral values, drop those
-MAX_DIST = 200.0
+MAX_DIST = 210.0
 TRIGGER_ADDR = 0x080  # last slot of the cycle: publish once per full sweep
 RECORD = struct.Struct('<Bfff')
 HEADER = struct.Struct('<BB')
@@ -43,9 +47,9 @@ def decode(dat: bytes):
   if len(dat) < 12:
     return None
   raw_dist = dat[6] | dat[7] << 8
-  if raw_dist == 0:
+  if raw_dist == 0 or raw_dist >> 12 != 1:  # empty slot, or a status other than a normal track
     return None
-  dist = raw_dist * DIST_SCALE
+  dist = (raw_dist & DIST_MASK) * DIST_SCALE
   lat = ((dat[8] | dat[9] << 8) - LAT_CENTRE) * LAT_SCALE
   vrel = ((dat[10] | dat[11] << 8) - VREL_CENTRE) * VREL_SCALE
   if not (0.5 < dist < MAX_DIST) or abs(lat) > MAX_LAT:

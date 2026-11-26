@@ -50,7 +50,8 @@ LEAD_BRAKE_ACCEL = -1.0  # m/s2: model lead acceleration that counts as braking
 BODY_STYLES = [('sedan', 3), ('suv', 3), ('hatch', 2)]  # (body, weight)
 SHADOW_OFFSET = (0.55, -0.45)  # m (right, forward): shadows fall right and back, away from the light
 SHADOW_ALPHA = 0.32
-DISPLAY_DIST_SCALE = 0.5  # other cars are drawn at this fraction of their real gap to us, so they sit where they can be seen
+DISPLAY_DIST_SCALE = 0.5  # far cars are drawn at this fraction of their real gap to us, so they sit where they can be seen
+DISPLAY_BLEND = 12.0  # m: ...easing to true scale near us, so cars come alongside and pass at their real positions
 MIN_DISPLAY_GAP = 1.0  # m of drawn gap kept between our bumper and the nearest car
 IN_LANE_Y = 1.4  # m from our path: a car this close sideways is in our lane
 FAR_BOOST = (15.0, 60.0, 1.25)  # other cars drawn up to 1.25x larger with distance (position unchanged) so they read on the small screen
@@ -68,7 +69,7 @@ SHELL_SIZE = {'sedan': (4.65, 1.86, 1.45), 'suv': (4.8, 1.95, 1.75), 'hatch': (4
 EGO_LEN = 4.5
 LEAD_MIN_PROB = 0.5
 NEAR = 0.5  # m: anything closer to the virtual camera is skipped
-RADAR_TO_CAMERA = 1.52  # m, object distances are from the front bumper, model distances from the camera
+RADAR_TO_CAMERA = 0.0  # m: honda_objectd's distance is fitted directly against the camera lead (camera frame)
 OBJ_DTYPE = np.dtype([('id', 'u1'), ('dist', '<f4'), ('lat', '<f4'), ('vrel', '<f4')])  # honda_objectd record
 PAYLOAD_VERSION = 2  # honda_objectd header: (version, tsr_code)
 TSR_STOP = 121  # car's Traffic Sign Recognition code for a stop sign
@@ -80,6 +81,13 @@ SIGN_POST_H, SIGN_RADIUS = 2.1, 0.38  # m: real post height to the sign's centre
 SIGN_BOOST = 2.2  # drawn larger, like the other cars, so it reads on the small screen
 OBJ_TIMEOUT = 0.4  # s without an update before a tracked car fades out
 LEAD_MATCH_X, LEAD_MATCH_Y = 6.0, 1.8  # m: a tracked car this close to the camera lead is the same car
+# Passing: the car's sensors only look forward, so a car we overtake drops out of the list before it's beside us. If we
+# were closing on it, it was near and out of our lane, it keeps sliding back at its last closing speed until it has
+# left the bottom of the screen (or GHOST_MAX_T passes), instead of vanishing.
+PASS_MAX_X = 30.0  # m ahead: lost closer than this while closing = being passed
+PASS_MIN_CLOSING = 0.5  # m/s
+GHOST_END_X = -16.0  # m: rear bumper this far behind the camera is off the bottom of the screen
+GHOST_MAX_T = 8.0  # s
 
 # Chase camera, relative to our car (metres), matched to the reference robotaxi view: ~9 m up and 11 m back, tilted
 # ~37 deg down with a wide lens, so our car sits mid-screen with traffic ahead and on both sides in view
@@ -228,18 +236,36 @@ class TopView:
         oid = int(r['id'])
         x, y = float(r['dist']) + RADAR_TO_CAMERA, -float(r['lat'])  # model frame: y right-positive
         o = self._objects.get(oid)
-        if o is None or abs(o['x'].x - x) > 10.0 or abs(o['y'].x - y) > 3.0:
+        if o is None or o.get('ghost') or abs(o['x'].x - x) > 10.0 or abs(o['y'].x - y) > 3.0:
           o = {'x': FirstOrderFilter(x, 0.1, dt), 'y': FirstOrderFilter(y, 0.1, dt), 'alpha': FirstOrderFilter(0.0, 0.15, dt),
-               'look': self._new_look(), 'born': now}
+               'look': self._new_look(), 'born': now, 'rate': FirstOrderFilter(0.0, 0.5, dt), 'last': (now, x)}
           self._objects[oid] = o
+        t_prev, x_prev = o['last']
+        if now - t_prev > 0.03:  # closing speed from the distance itself (the speed field is only approximate)
+          o['rate'].update(float(np.clip((x - x_prev) / (now - t_prev), -40.0, 40.0)))
+          o['last'] = (now, x)
         o['x'].update(x)
         o['y'].update(y)
         o['seen'] = now
     self._stop_sign_alpha.update(1.0 if self._tsr_code == TSR_STOP else 0.0)
+    path = self._path
     for oid in list(self._objects):
       o = self._objects[oid]
-      o['alpha'].update(1.0 if now - o['seen'] < OBJ_TIMEOUT else 0.0)
-      if now - o['seen'] > OBJ_TIMEOUT and o['alpha'].x < 0.02:
+      lost = now - o['seen'] >= OBJ_TIMEOUT
+      if lost and not o.get('ghost'):
+        x, y, rate = o['x'].x, o['y'].x, o['rate'].x
+        y_path = float(np.interp(x, path[:, 0], path[:, 1])) if path.shape[0] >= 2 else 0.0
+        if x < PASS_MAX_X and rate < -PASS_MIN_CLOSING and abs(y - y_path) > IN_LANE_Y and o['alpha'].x > 0.5:
+          o['ghost'], o['ghost_t'] = True, now
+      if o.get('ghost'):
+        o['x'].x += o['rate'].x * dt  # keep sliding back past us at the last closing speed
+        gone = o['x'].x < GHOST_END_X or now - o['ghost_t'] > GHOST_MAX_T
+        o['alpha'].update(0.0 if gone else 1.0)
+        if gone and o['alpha'].x < 0.02:
+          del self._objects[oid]
+        continue
+      o['alpha'].update(0.0 if lost else 1.0)
+      if lost and o['alpha'].x < 0.02:
         del self._objects[oid]
 
   def _new_look(self) -> tuple:
@@ -583,8 +609,9 @@ class TopView:
     lead_matched = False
     for o in self._objects.values():
       x, y, a = o['x'].x, o['y'].x, o['alpha'].x
-      if a < 0.02 or x < EGO_CENTER_X + CAR_LEN:
-        continue
+      y_path = float(np.interp(x, self._path[:, 0], self._path[:, 1])) if self._path.shape[0] >= 2 else 0.0
+      if a < 0.02 or (abs(y - y_path) < IN_LANE_Y and x < EGO_CENTER_X + CAR_LEN):
+        continue  # cars beside and behind us are drawn; only one in our own lane overlapping us is skipped
       if lead_a > 0.3 and abs(x - self._lead_x.x) < LEAD_MATCH_X and abs(y - self._lead_y.x) < LEAD_MATCH_Y:
         # same car seen by camera and sensors: keep whichever look it showed first, so it doesn't change when they pair up
         if o['born'] <= self._lead_born:
@@ -604,7 +631,13 @@ class TopView:
     ego_front = EGO_CENTER_X + CAR_LEN / 2
 
     def to_display(x: float, y: float) -> tuple[float, float]:
-      x_d = ego_front + max(MIN_DISPLAY_GAP, (x - ego_front) * DISPLAY_DIST_SCALE)
+      g = x - ego_front
+      if g > 0:  # slope 1 at our bumper, DISPLAY_DIST_SCALE far away: no jump as a car comes alongside
+        g = g * DISPLAY_DIST_SCALE + (1.0 - DISPLAY_DIST_SCALE) * DISPLAY_BLEND * (1.0 - math.exp(-g / DISPLAY_BLEND))
+      x_d = ego_front + g
+      y_path = float(np.interp(x, path[:, 0], path[:, 1])) if path.shape[0] >= 2 else 0.0
+      if abs(y - y_path) < IN_LANE_Y:
+        x_d = max(x_d, ego_front + MIN_DISPLAY_GAP)
       if path.shape[0] >= 2:
         y += float(np.interp(x_d, path[:, 0], path[:, 1]) - np.interp(x, path[:, 0], path[:, 1]))
       return x_d, y
@@ -626,14 +659,17 @@ class TopView:
     braking = sm['carState'].brakePressed or (cc.longActive and cc.actuators.accel < -0.5)
     y0 = float(np.interp(0.0, path[:, 0], path[:, 1])) if path.shape[0] >= 2 else 0.0
     lead_braking = self._lead_brake.x > 0.5
-    for x, y, (paint, body), a, is_lead in sorted(cars, key=lambda c: -c[0]):  # far to near so nearer cars overlap correctly
+    bodies = []  # (centre x, draw call) for every car including ours, painted far to near
+    for x, y, (paint, body), a, is_lead in cars:
       near, far, most = FAR_BOOST
       k = 1.0 + (most - 1.0) * min(1.0, max(0.0, (x - near) / (far - near)))
       length = SHELL_SIZE[body][0]
       cx = x + length * k / 2  # keep the rear bumper where the sensors put it
       self._shadow(cx, y, a, k, length)
-      self._draw_car(cx, y, paint, a * SHELL_ALPHA, is_lead and lead_braking, k, body)
+      bodies.append((cx, lambda cx=cx, y=y, paint=paint, a=a, k=k, body=body, brake=is_lead and lead_braking:
+                     self._draw_car(cx, y, paint, a * SHELL_ALPHA, brake, k, body)))
     self._shadow(EGO_CENTER_X, y0, 1.0, 1.0, EGO_LEN)
+    bodies.append((EGO_CENTER_X, lambda: self._draw_car(EGO_CENTER_X, y0, EGO_LOWER, 1.0, braking, 1.0, 'ego')))
     sign_a = self._stop_sign_alpha.x
     if sign_a > 0.02:
       sx = self._sign_x.update(self._sign_distance())
@@ -645,4 +681,5 @@ class TopView:
         else:
           y_curb = (float(np.interp(x_d, path[:, 0], path[:, 1])) if path.shape[0] >= 2 else 0.0) + 3.5
         self._draw_stop_sign_post(x_d, y_curb, sign_a, SIGN_BOOST)
-    self._draw_car(EGO_CENTER_X, y0, EGO_LOWER, 1.0, braking, 1.0, 'ego')
+    for _, draw in sorted(bodies, key=lambda b: -b[0]):  # far to near, so a car beside or behind us overlaps ours correctly
+      draw()
