@@ -78,7 +78,8 @@ SIGN_ROLL_V, SIGN_STOP_V = 2.6, 0.3  # m/s: model plan speeds that mark where it
 SIGN_DEFAULT_DIST = 20.0  # m: where to show it if the model's plan doesn't say
 SIGN_CURB_OFFSET = 0.6  # m outside the right road edge
 SIGN_POST_H, SIGN_RADIUS = 2.1, 0.38  # m: real post height to the sign's centre, 30-inch octagon
-SIGN_BOOST = 2.2  # drawn larger, like the other cars, so it reads on the small screen
+SIGN_BOOST = 1.6  # drawn larger, like the other cars, so it reads on the small screen
+SIGN_POST, SIGN_FACE, SIGN_RIM = (205, 208, 214), (196, 200, 207), (165, 169, 177)  # plain light greys, like the reference
 OBJ_TIMEOUT = 0.4  # s without an update before a tracked car fades out
 LEAD_MATCH_X, LEAD_MATCH_Y = 6.0, 1.8  # m: a tracked car this close to the camera lead is the same car
 # Passing: the car's sensors only look forward, so a car we overtake drops out of the list before it's beside us. If we
@@ -501,33 +502,42 @@ class TopView:
     return SIGN_DEFAULT_DIST
 
   def _draw_stop_sign_post(self, x: float, y_curb: float, alpha: float, k: float):
-    """Red octagon on a grey post at the curb, in true perspective (it faces back toward us)."""
+    """Plain sign in the robotaxi style: thin light-grey post, flat light-grey round plate facing back toward us,
+    a soft shadow on the road. No red or text on the road; the corner badge still says STOP."""
     base = _wp(x, y_curb)
     post_top = SIGN_POST_H * k
     w = 0.06 * k
-    # post: a thin vertical box, two visible faces
-    for dx in (-w, w):
-      pts = np.array([base + [dx, 0, 0], base + [dx, post_top, 0], base + [dx, post_top, -w * 2], base + [dx, 0, -w * 2]])
-      scr, z = self._cam.project(pts)
-      if z.min() >= NEAR:
-        _fan2d(scr, _rgba((150, 156, 160), alpha, 0.8 if dx < 0 else 0.6))
-    # sign plate: white rim and red face, octagons in the vertical plane facing back toward our car
+    # shadow: a thin streak from the foot of the post away from the light, ending in the plate's shadow
+    sx, sz = SHADOW_OFFSET[0], -SHADOW_OFFSET[1]  # world: right, backwards
+    n = math.hypot(sx, sz)
+    sx, sz = sx / n, sz / n
+    reach = post_top * 0.55
+    px, pz = -sz * w * 1.5, sx * w * 1.5  # streak half-width, perpendicular to its direction
+    streak = np.array([base + [px, 0.02, pz], base + [-px, 0.02, -pz], base + [sx * reach - px, 0.02, sz * reach - pz],
+                       base + [sx * reach + px, 0.02, sz * reach + pz]])
+    scr, z = self._cam.project(streak)
+    if z.min() >= NEAR:
+      _fan2d(scr, rl.Color(0, 0, 0, int(255 * SHADOW_ALPHA * alpha)))
+    ang = np.radians(np.arange(0, 360, 30))
+    spot = base + [sx * reach, 0.02, sz * reach] + np.column_stack((np.cos(ang) * SIGN_RADIUS * k * 0.9, np.zeros(ang.size),
+                                                                   np.sin(ang) * SIGN_RADIUS * k * 0.45))
+    scr, z = self._cam.project(spot)
+    if z.min() >= NEAR:
+      _fan2d(scr, rl.Color(0, 0, 0, int(255 * SHADOW_ALPHA * alpha)))
+    # post: one solid face toward us (two side faces at this size alias into dashes on the small screen)
+    pts = np.array([base + [-w, 0, 0], base + [w, 0, 0], base + [w, post_top, 0], base + [-w, post_top, 0]])
+    scr, z = self._cam.project(pts)
+    if z.min() >= NEAR:
+      _fan2d(scr, _rgba(SIGN_POST, alpha, 0.9))
+    # plate: a slightly darker rim, then the face, both round discs in the vertical plane facing us
     centre = base + [0, post_top, 0.02]
-    for radius, rgb in ((SIGN_RADIUS * k, (245, 245, 245)), (SIGN_RADIUS * k * 0.86, (200, 16, 32))):
-      ang = np.radians(22.5 + 45.0 * np.arange(8))
-      ring = centre + np.column_stack((np.cos(ang) * radius, np.sin(ang) * radius, np.zeros(8)))
-      ring[:, 2] += 0.01 if rgb[0] < 240 else 0.0  # face sits just in front of the rim
+    ang = np.radians(np.arange(0, 360, 360 / 20))
+    for radius, rgb, dz in ((SIGN_RADIUS * k, SIGN_RIM, 0.0), (SIGN_RADIUS * k * 0.88, SIGN_FACE, 0.01)):
+      ring = centre + np.column_stack((np.cos(ang) * radius, np.sin(ang) * radius, np.full(ang.size, dz)))
       scr, z = self._cam.project(ring)
       if z.min() < NEAR:
         return
       _fan2d(scr, _rgba(rgb, alpha))
-    # "STOP", sized to the projected plate
-    scr, z = self._cam.project(np.array([centre, centre + [SIGN_RADIUS * k, 0, 0]]))
-    size = int(max(5.0, abs(scr[1, 0] - scr[0, 0]) * 0.75))
-    font = gui_app.font(FontWeight.BOLD)
-    m = measure_text_cached(font, "STOP", size)
-    rl.draw_text_ex(font, "STOP", rl.Vector2(float(scr[0, 0] - m.x / 2), float(scr[0, 1] - m.y / 2)), size, 0,
-                    rl.Color(255, 255, 255, int(255 * alpha)))
 
   def _shadow(self, x_center: float, y: float, alpha: float, scale: float = 1.0, length: float = CAR_LEN):
     """Soft rounded footprint, offset away from the light: a darker core over a slightly larger, fainter one."""
