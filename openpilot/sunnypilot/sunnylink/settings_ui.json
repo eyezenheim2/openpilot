@@ -2164,7 +2164,7 @@
               "key": "DriveNarrationWeather",
               "widget": "toggle",
               "title": "Weather in Greeting",
-              "description": "After the greeting, the current weather where you are (\"Currently 58 degrees and foggy.\"), with a heads-up when rain is likely. Needs an internet connection; skipped when there isn't one.",
+              "description": "After the greeting, the current weather where you are (\"Currently 58 degrees and foggy.\"), with a heads-up when rain is likely. The forecast for today and tomorrow is stored, so drives without internet still get it (refreshed every few hours when online).",
               "enablement": [
                 {
                   "type": "param",

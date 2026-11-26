@@ -29,7 +29,8 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.narration_text import (Msg, TEXT, VOICES, SpeechTrigger,
                                                                greeting_choices, spoken_parts, time_caption, time_parts,
                                                                weather_parts, StopAndGo)
-from openpilot.selfdrive.ui.narration_weather import WeatherFetcher, position_from_param
+from openpilot.common.params import Params
+from openpilot.selfdrive.ui.narration_weather import CACHE_PARAM, WeatherFetcher, position_from_param
 
 NARRATION_PARAM = "DriveNarration"
 GREETING_DELAY = 1.5  # s after openpilot has loaded (controls and model running) before the onroad greeting
@@ -432,7 +433,8 @@ class DriveNarrator(Widget):
     self._loaded_at: float | None = None
     self._time_on = True
     self._weather_on = True
-    self._weather = WeatherFetcher()
+    # the fetch thread saves with its own Params handle
+    self._weather = WeatherFetcher(load=lambda: ui_state.params.get(CACHE_PARAM), save=lambda c: Params().put(CACHE_PARAM, c))
     self._weather_started = False
     self._traffic = StopAndGo()
     self._last_said_at = -1e9
@@ -546,9 +548,7 @@ class DriveNarrator(Widget):
       return
     if self._weather_on and not self._weather_started:  # fetch while openpilot is still loading
       self._weather_started = True
-      params = ui_state.params
-      if pos := position_from_param(params.get("LastGPSPositionLLK")):
-        self._weather.start(*pos, metric=params.get_bool("IsMetric"))
+      self._weather.start(position_from_param(ui_state.params.get("LastGPSPositionLLK")))
     loaded = sm.recv_frame['carControl'] >= ui_state.started_frame and sm.alive['modelV2']
     if not loaded:
       return
@@ -560,7 +560,7 @@ class DriveNarrator(Widget):
       self._greeted = True
       hour = datetime.now(GREETING_TZ).hour
       parts = [random.choice(greeting_choices(hour))]
-      if self._weather_on and (w := self._weather.result()):
+      if self._weather_on and (w := self._weather.result(ui_state.params.get_bool("IsMetric"))):
         parts += weather_parts(w.temp, w.code, w.is_day, w.rain_chance)
       self._say(parts)
 
