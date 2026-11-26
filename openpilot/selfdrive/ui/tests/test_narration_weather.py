@@ -1,7 +1,7 @@
 import time
 
 from openpilot.selfdrive.ui.narration_text import weather_parts
-from openpilot.selfdrive.ui.narration_weather import REFRESH_S, WeatherFetcher, parse, position_from_param, request_params, usable, weather_at
+from openpilot.selfdrive.ui.narration_weather import WeatherFetcher, parse, position_from_param, request_params, usable, weather_at
 
 T0 = 1_764_000_000 // 3600 * 3600  # an hour boundary
 HOME = (37.5, -122.2)
@@ -74,31 +74,45 @@ def test_fetch_stores_forecast():
   assert round(f.result(metric=False).temp) == 58
 
 
-def test_offline_later_uses_stored_forecast():
+def test_offline_uses_stored_forecast():
   store = Store(parse(reply(), *HOME, fetched=T0))
   def offline(*_):
     raise OSError("no network")
-  now = T0 + 10 * 3600  # hours later, past the refresh age: tries to refresh, can't, still has weather
-  f = WeatherFetcher(store.load, store.save, get=offline, clock=lambda: now)
-  f.start(HOME)
-  assert not f.busy  # greeting doesn't wait: the stored hour is right there
-  wait(f)
-  assert f.result(metric=False) is not None and store.value["fetched"] == T0
-
-
-def test_fresh_forecast_not_refetched():
-  store, calls = Store(parse(reply(), *HOME, fetched=T0)), []
-  f = WeatherFetcher(store.load, store.save, get=lambda *a: calls.append(a) or reply(), clock=lambda: T0 + REFRESH_S - 60)
+  f = WeatherFetcher(store.load, store.save, get=offline, clock=lambda: T0 + 10 * 3600)
   f.start(HOME)
   wait(f)
-  assert calls == [] and f.result(metric=False) is not None
+  assert f.result(metric=False) is not None and store.value["fetched"] == T0  # saved one kept
 
 
-def test_no_gps_uses_stored():
+def test_online_always_pulls_fresh_and_replaces_saved():
+  store, calls = Store(parse(reply(temp_c=10.0), *HOME, fetched=T0)), []
+  now = T0 + 600  # saved only 10 minutes ago: still refreshed
+  f = WeatherFetcher(store.load, store.save, get=lambda *a: calls.append(a) or reply(temp_c=20.0), clock=lambda: now)
+  f.start(HOME)
+  wait(f)
+  assert len(calls) == 1 and store.value["fetched"] == now and store.value["temp"][0] == 20.0
+  assert round(f.result(metric=True).temp) == 20  # the fresh one is what gets spoken
+
+
+def test_busy_while_fetching():
+  import threading
+  gate = threading.Event()
   store = Store(parse(reply(), *HOME, fetched=T0))
-  f = WeatherFetcher(store.load, store.save, get=lambda *a: reply(), clock=lambda: T0 + 3600)
+  f = WeatherFetcher(store.load, store.save, get=lambda *a: gate.wait(2) and reply(temp_c=30.0), clock=lambda: T0 + 60)
+  f.start(HOME)
+  assert f.busy  # greeting waits for the fresh pull...
+  assert round(f.result(metric=True).temp) == 14  # ...with the saved one ready if it times out
+  gate.set()
+  wait(f)
+  assert not f.busy and round(f.result(metric=True).temp) == 30
+
+
+def test_no_gps_fetches_at_saved_place():
+  store, calls = Store(parse(reply(), *HOME, fetched=T0)), []
+  f = WeatherFetcher(store.load, store.save, get=lambda url, params, timeout: calls.append(params) or reply(), clock=lambda: T0 + 3600)
   f.start(None)
-  assert f.result(metric=False) is not None
+  wait(f)
+  assert calls[0]["latitude"] == HOME[0] and f.result(metric=False) is not None
 
 
 def test_stored_for_elsewhere_not_spoken_offline():

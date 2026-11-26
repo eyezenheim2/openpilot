@@ -34,7 +34,7 @@ from openpilot.selfdrive.ui.narration_weather import CACHE_PARAM, WeatherFetcher
 
 NARRATION_PARAM = "DriveNarration"
 GREETING_DELAY = 1.5  # s after openpilot has loaded (controls and model running) before the onroad greeting
-WEATHER_WAIT = 4.0  # s past GREETING_DELAY the greeting may wait for the weather before going without it
+WEATHER_WAIT = 4.0  # s past GREETING_DELAY the greeting waits for a fresh forecast before using the saved one
 GREETING_TZ = ZoneInfo("America/Los_Angeles")  # same zone as the HUD clock
 TIME_QUIET_S = 3.0  # and only once nothing has been said for this long
 GREETING_CAPTION_S = 4.0  # s the "Good morning · Eyezenheim" caption stays up

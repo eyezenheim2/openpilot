@@ -1,9 +1,9 @@
 """Weather for the onroad greeting, from Open-Meteo (free, no API key).
 
-One fetch stores an hourly forecast for today and tomorrow in the DriveNarrationWeatherCache param. Every greeting
-reads the current hour from it, so drives later in the day need no internet. When the stored forecast is a few
-hours old and there is a connection, it is refreshed in the background, never holding up the greeting.
-No forecast for this hour or this area (and no connection to get one) just means the greeting has no weather.
+Every time openpilot goes onroad a fresh forecast is fetched (hourly, today and tomorrow) and saved to the
+DriveNarrationWeatherCache param, replacing the old one. The greeting waits a few seconds for it; when there's no
+internet (or it's slow) the saved forecast is used instead, so a drive without a connection still gets this hour's
+weather. No saved forecast for this hour or this area either just means the greeting has no weather.
 """
 import json
 import threading
@@ -15,7 +15,6 @@ URL = "https://api.open-meteo.com/v1/forecast"
 CACHE_PARAM = "DriveNarrationWeatherCache"
 TIMEOUT = 4.0  # s per request
 FORECAST_DAYS = 2  # covers a drive past midnight
-REFRESH_S = 3 * 3600  # a stored forecast older than this is refreshed when online (still used meanwhile)
 MAX_DIST = 0.3  # deg (~30 km): a forecast for farther away than this isn't used
 RAIN_HOURS = 12  # "Rain is likely later." looks this far ahead
 
@@ -113,7 +112,8 @@ class WeatherFetcher:
     self._cache: dict | None = None
 
   def start(self, pos: tuple[float, float] | None) -> None:
-    """Load the stored forecast; fetch a new one in the background when it's missing, for elsewhere or getting old."""
+    """Load the saved forecast as a fallback and fetch a fresh one in the background (at the saved forecast's place
+    when there's no GPS fix yet)."""
     with self._lock:
       if self._thread is not None and self._thread.is_alive():
         return
@@ -125,16 +125,18 @@ class WeatherFetcher:
       have = usable(self._cache, pos, now)
       if not have and pos is not None:
         self._cache = None  # for somewhere else: don't speak it
-      if pos is None or (have and now - self._cache.get("fetched", 0) < REFRESH_S):
+      if pos is None and have:
+        pos = (self._cache["lat"], self._cache["lon"])
+      if pos is None:
         return
       self._thread = threading.Thread(target=self._run, args=pos, daemon=True, name="narration_weather")
       self._thread.start()
 
   @property
   def busy(self) -> bool:
-    """Still fetching, with nothing stored for now to use meanwhile (so the greeting may wait a moment)."""
+    """Fresh forecast still on its way (the greeting waits a few seconds for it)."""
     with self._lock:
-      return self._thread is not None and self._thread.is_alive() and not usable(self._cache, None, self._clock())
+      return self._thread is not None and self._thread.is_alive()
 
   def result(self, metric: bool) -> Weather | None:
     with self._lock:
