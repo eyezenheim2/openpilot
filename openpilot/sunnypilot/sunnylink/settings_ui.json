@@ -2161,6 +2161,19 @@
               ]
             },
             {
+              "key": "DriveNarrationWeather",
+              "widget": "toggle",
+              "title": "Weather in Greeting",
+              "description": "After the greeting, the current weather where you are (\"Currently 58 degrees and foggy. High of 67 today.\"), with a heads-up when rain is likely. Needs an internet connection; skipped when there isn't one.",
+              "enablement": [
+                {
+                  "type": "param",
+                  "key": "DriveNarrationGreeting",
+                  "equals": true
+                }
+              ]
+            },
+            {
               "key": "DriveNarrationTime",
               "widget": "toggle",
               "title": "Time Announcements",

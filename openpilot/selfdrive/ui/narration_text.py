@@ -139,6 +139,50 @@ def greeting_choices(hour: int) -> list[str]:
   return GREETINGS[greeting_band(hour)] + GREETINGS["any"]
 
 
+# weather, said right after the greeting: "Currently" + temp + condition (+ "High of" + temp) (+ rain warning)
+WEATHER_PREFIX = "Currently"
+WEATHER_HIGH = "High of"
+WEATHER_TODAY = "today."  # "High of 67 today."
+WEATHER_RAIN_LATER = "Rain is likely later."
+WEATHER_RAIN_CHANCE = 50  # % chance today that earns the rain warning
+# condition phrase by WMO weather code (Open-Meteo's weather_code); (day, night)
+WEATHER_CONDITIONS = [
+  ((0,), ("degrees and sunny.", "degrees and clear.")),
+  ((1, 2), ("degrees and partly cloudy.", "degrees and partly cloudy.")),
+  ((3,), ("degrees and cloudy.", "degrees and cloudy.")),
+  ((45, 48), ("degrees and foggy.", "degrees and foggy.")),
+  ((51, 53, 55, 56, 57), ("degrees and drizzling.", "degrees and drizzling.")),
+  ((61, 63, 65, 66, 67, 80, 81, 82), ("degrees and raining.", "degrees and raining.")),
+  ((71, 73, 75, 77, 85, 86), ("degrees and snowing.", "degrees and snowing.")),
+  ((95, 96, 99), ("degrees with thunderstorms.", "degrees with thunderstorms.")),
+]
+WET_CODES = {c for codes, (day, _) in WEATHER_CONDITIONS for c in codes if c >= 51}
+
+
+def weather_condition(code: int, is_day: bool) -> str | None:
+  for codes, (day, night) in WEATHER_CONDITIONS:
+    if code in codes:
+      return day if is_day else night
+  return None
+
+
+def weather_parts(temp: float, code: int, is_day: bool, high: float | None = None, rain_chance: int | None = None,
+                  band: str = "morning") -> list[str]:
+  """Clip texts for the weather line: (58, 45, True, 67, 10) -> ["Currently", "58", "degrees and foggy.",
+  "High of", "67", "today."].
+  The high is only said in the morning and afternoon; the rain warning only when it isn't wet already.
+  Empty when the temperature has no clip (below 1 degree) or the code is unknown."""
+  t, condition = round(temp), weather_condition(code, is_day)
+  if t not in NUMBERS or condition is None:
+    return []
+  parts = [WEATHER_PREFIX, str(t), condition]
+  if high is not None and band in ("morning", "afternoon") and round(high) in NUMBERS and round(high) > t:
+    parts += [WEATHER_HIGH, str(round(high)), WEATHER_TODAY]
+  if rain_chance is not None and rain_chance >= WEATHER_RAIN_CHANCE and code not in WET_CODES:
+    parts.append(WEATHER_RAIN_LATER)
+  return parts
+
+
 # quarter-hour time announcement: "It's" + hour (+ minutes) + "A.M."/"P.M." ("A.M." is what Piper reads as "ay em")
 TIME_PREFIX = "It's"
 TIME_AM, TIME_PM = "A.M.", "P.M."
@@ -162,8 +206,9 @@ def time_caption(hour: int, minute: int) -> str:
   return f"{hour % 12 or 12}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
 
 
-# shown but not spoken: fires often at low speed and is a tuning aid rather than news
-NOT_SPOKEN = {Msg.PLANTED}
+# shown but not spoken: PLANTED fires often at low speed and is a tuning aid rather than news;
+# STEER_LIMIT and GAS_OVERRIDE were muted at the driver's request (the captions still show)
+NOT_SPOKEN = {Msg.PLANTED, Msg.STEER_LIMIT, Msg.GAS_OVERRIDE}
 
 NUMBERS = range(1, 161)  # speeds that can be spoken (mph or km/h)
 
@@ -213,6 +258,8 @@ def all_clip_texts() -> list[str]:
   phrases = {p for parts in SPOKEN.values() for p in parts if p != "{n}"}
   phrases |= {g for lines in GREETINGS.values() for g in lines}
   phrases |= {TIME_PREFIX, TIME_AM, TIME_PM, TIME_OH}
+  phrases |= {WEATHER_PREFIX, WEATHER_HIGH, WEATHER_TODAY, WEATHER_RAIN_LATER}
+  phrases |= {c for _, conds in WEATHER_CONDITIONS for c in conds}
   return sorted(phrases) + [str(n) for n in NUMBERS]
 
 

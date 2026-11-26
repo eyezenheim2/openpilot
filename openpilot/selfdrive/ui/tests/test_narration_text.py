@@ -2,7 +2,7 @@ from pathlib import Path
 
 from openpilot.selfdrive.ui.narration_text import (CHIME, CHIME_FILE, GREETINGS, Msg, NOT_SPOKEN, NUMBERS, SPOKEN, TEXT, VOICES, SpeechTrigger,
                                                                all_clip_texts, clip_name, greeting_band, greeting_choices, spoken_parts,
-                                                     time_caption, time_parts, StopAndGo)
+                                                     time_caption, time_parts, weather_parts, StopAndGo)
 
 CLIP_ROOT = Path(__file__).resolve().parents[2] / "assets" / "sounds" / "narration"
 
@@ -124,3 +124,27 @@ def test_old_stops_expire():
 def test_creeping_does_not_count_as_new_stops():
   # inching forward at walking pace between stops doesn't add stops
   assert not run_traffic([(10.0, 130), (0.0, 10), (1.0, 5), (0.0, 10), (1.0, 5), (0.0, 10)])
+
+
+def test_muted_lines_still_captioned():
+  for m in (Msg.STEER_LIMIT, Msg.GAS_OVERRIDE):
+    assert m in NOT_SPOKEN and m in TEXT
+  assert run_trigger([(Msg.STEER_LIMIT, 0, 3.0), (Msg.GAS_OVERRIDE, 0, 3.0)]) == []
+
+
+def test_weather_parts():
+  assert weather_parts(58.4, 45, True, 67.2, 10) == ["Currently", "58", "degrees and foggy.", "High of", "67", "today."]
+  assert weather_parts(52, 0, False, 67, 10, band="evening") == ["Currently", "52", "degrees and clear."]  # no high at night
+  assert weather_parts(60, 0, True, 72, 10)[2] == "degrees and sunny."
+  assert weather_parts(60, 2, True, 60, 70) == ["Currently", "60", "degrees and partly cloudy.", "Rain is likely later."]
+  assert weather_parts(55, 63, True, 58, 90) == ["Currently", "55", "degrees and raining.", "High of", "58", "today."]  # already wet
+  assert weather_parts(0.3, 0, True) == [] and weather_parts(-5, 71, True) == []  # no clip below 1
+  assert weather_parts(60, 999, True) == []  # unknown code
+
+
+def test_weather_parts_have_clips():
+  texts = set(all_clip_texts())
+  for code in (0, 1, 2, 3, 45, 48, 51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 71, 73, 75, 77, 80, 81, 82, 85, 86, 95, 96, 99):
+    for is_day in (True, False):
+      parts = weather_parts(70, code, is_day, 80, 60)
+      assert parts and set(parts) <= texts, (code, parts)

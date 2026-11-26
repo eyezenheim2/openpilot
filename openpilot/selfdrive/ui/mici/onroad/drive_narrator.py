@@ -27,10 +27,13 @@ from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.narration_text import (Msg, TEXT, VOICES, SpeechTrigger,
-                                                               greeting_choices, spoken_parts, time_caption, time_parts, StopAndGo)
+                                                               greeting_band, greeting_choices, spoken_parts, time_caption, time_parts,
+                                                               weather_parts, StopAndGo)
+from openpilot.selfdrive.ui.narration_weather import WeatherFetcher, position_from_param
 
 NARRATION_PARAM = "DriveNarration"
 GREETING_DELAY = 1.5  # s after openpilot has loaded (controls and model running) before the onroad greeting
+WEATHER_WAIT = 4.0  # s past GREETING_DELAY the greeting may wait for the weather before going without it
 GREETING_TZ = ZoneInfo("America/Los_Angeles")  # same zone as the HUD clock
 TIME_QUIET_S = 3.0  # and only once nothing has been said for this long
 TIME_CAPTION_S = 3.0  # s the "It's · 3:15" caption stays up (a driving caption takes its place right away)
@@ -428,6 +431,9 @@ class DriveNarrator(Widget):
     self._greeted = False
     self._loaded_at: float | None = None
     self._time_on = True
+    self._weather_on = True
+    self._weather = WeatherFetcher()
+    self._weather_started = False
     self._traffic = StopAndGo()
     self._last_said_at = -1e9
     self._time_announced: tuple[int, int, int] | None = None  # (day, hour, quarter) already announced
@@ -534,18 +540,29 @@ class DriveNarrator(Widget):
     """Speak one greeting per onroad session, shortly after openpilot has loaded."""
     sm = ui_state.sm
     if not ui_state.started:
-      self._greeted, self._loaded_at = False, None
+      self._greeted, self._loaded_at, self._weather_started = False, None, False
       return
     if self._greeted or not (self._voice and self._greeting):
       return
+    if self._weather_on and not self._weather_started:  # fetch while openpilot is still loading
+      self._weather_started = True
+      params = ui_state.params
+      if pos := position_from_param(params.get("LastGPSPositionLLK")):
+        self._weather.start(*pos, metric=params.get_bool("IsMetric"))
     loaded = sm.recv_frame['carControl'] >= ui_state.started_frame and sm.alive['modelV2']
     if not loaded:
       return
     if self._loaded_at is None:
       self._loaded_at = now
     elif now - self._loaded_at >= GREETING_DELAY:
+      if self._weather_on and self._weather.busy and now - self._loaded_at < GREETING_DELAY + WEATHER_WAIT:
+        return
       self._greeted = True
-      self._say([random.choice(greeting_choices(datetime.now(GREETING_TZ).hour))])
+      hour = datetime.now(GREETING_TZ).hour
+      parts = [random.choice(greeting_choices(hour))]
+      if self._weather_on and (w := self._weather.result()):
+        parts += weather_parts(w.temp, w.code, w.is_day, w.high, w.rain_chance, greeting_band(hour))
+      self._say(parts)
 
   def _update_time(self, now: float, i: NarratorInputs, in_traffic: bool) -> None:
     """In stop-and-go traffic, say the exact time once per quarter hour while stopped behind a car, in a quiet moment
@@ -576,6 +593,7 @@ class DriveNarrator(Widget):
       self._voice = params.get_bool("DriveNarrationVoice")
       self._greeting = params.get_bool("DriveNarrationGreeting")
       self._time_on = params.get_bool("DriveNarrationTime")
+      self._weather_on = params.get_bool("DriveNarrationWeather")
       self._volume = int(params.get("DriveNarrationVolume", return_default=True) or 0)
       voice_id = int(params.get("DriveNarrationVoiceId", return_default=True) or 0)
       self._voice_dir = VOICES[voice_id][0] if 0 <= voice_id < len(VOICES) else VOICES[0][0]

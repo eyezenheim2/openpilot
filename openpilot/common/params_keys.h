@@ -330,6 +330,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DriveNarrationVolume", {PERSISTENT | BACKUP, INT, "80"}},  // %, narration level relative to the alert sounds
     {"DriveNarrationGreeting", {PERSISTENT | BACKUP, BOOL, "1"}},  // spoken greeting when openpilot goes onroad
     {"DriveNarrationTime", {PERSISTENT | BACKUP, BOOL, "1"}},  // in stop-and-go traffic, say the time once per quarter hour while stopped
+    {"DriveNarrationWeather", {PERSISTENT | BACKUP, BOOL, "1"}},  // after the greeting, the current weather (Open-Meteo, from the last GPS fix)
     {"DriveNarrationSay", {CLEAR_ON_MANAGER_START, JSON}},  // UI -> soundd: {"id", "time", "voice", "volume", "parts"}
     {"AlertVolumeFloor", {PERSISTENT | BACKUP, INT, "30"}},  // %, quietest openpilot alerts get in a quiet cabin (stock ~7)
     {"UsbAudioOutput", {PERSISTENT | BACKUP, BOOL, "1"}},  // play all sounds on a USB speaker when one is plugged in
