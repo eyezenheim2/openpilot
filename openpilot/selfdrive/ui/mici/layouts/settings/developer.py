@@ -104,6 +104,22 @@ class DeveloperLayoutMici(NavScroller):
     self._narration_voice_toggle = BigParamControl("narration voice", "DriveNarrationVoice",
                                                    description="Speak the drive narration out loud, through a USB speaker " +
                                                                "when one is plugged in. Voice, volume and greeting are in sunnylink.")
+    self._greet_name_toggle = BigParamControl("greet by name", "DriveNarrationGreetName",
+                                              description="Say your name before the onroad greeting and show it on screen. " +
+                                                          "Set the name below. Names without a recorded voice clip are only shown.")
+
+    def name_callback(name: str):
+      name = name.strip()[:24]
+      ui_state.params.put("DriveNarrationName", name)
+      self._name_btn.set_value(name or "Not set")
+
+    def name_click():
+      gui_app.push_widget(BigInputDialog("enter your name...", ui_state.params.get("DriveNarrationName") or "",
+                                         minimum_length=0, confirm_callback=name_callback))
+
+    self._name_btn = BigButton("your name", ui_state.params.get("DriveNarrationName") or "Not set",
+                               description="The name the narration greets you by.")
+    self._name_btn.set_click_callback(name_click)
     self._usb_audio_toggle = BigParamControl("usb speaker", "UsbAudioOutput",
                                              description="Play all sounds through a USB speaker when one is plugged in. " +
                                                          "Urgent alarms also stay on the built-in speaker (sunnylink setting).")
@@ -152,6 +168,8 @@ class DeveloperLayoutMici(NavScroller):
       self._planted_steering_toggle,
       self._drive_narration_toggle,
       self._narration_voice_toggle,
+      self._greet_name_toggle,
+      self._name_btn,
       self._usb_audio_toggle,
       self._stop_line_assist_toggle,
       self._stop_sign_toggle,
@@ -175,6 +193,7 @@ class DeveloperLayoutMici(NavScroller):
       ("PlantedSteering", self._planted_steering_toggle),
       ("DriveNarration", self._drive_narration_toggle),
       ("DriveNarrationVoice", self._narration_voice_toggle),
+      ("DriveNarrationGreetName", self._greet_name_toggle),
       ("UsbAudioOutput", self._usb_audio_toggle),
       ("StopLineAssist", self._stop_line_assist_toggle),
       ("CaliforniaStop", self._stop_sign_toggle),

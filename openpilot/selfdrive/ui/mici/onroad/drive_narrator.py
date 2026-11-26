@@ -27,7 +27,7 @@ from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.narration_text import (Msg, TEXT, VOICES, SpeechTrigger,
-                                                               greeting_choices, spoken_parts, time_caption, time_parts,
+                                                               greeting_caption, greeting_choices, name_clip, spoken_parts, time_caption, time_parts,
                                                                weather_parts, StopAndGo)
 from openpilot.common.params import Params
 from openpilot.selfdrive.ui.narration_weather import CACHE_PARAM, WeatherFetcher, position_from_param
@@ -37,6 +37,7 @@ GREETING_DELAY = 1.5  # s after openpilot has loaded (controls and model running
 WEATHER_WAIT = 4.0  # s past GREETING_DELAY the greeting may wait for the weather before going without it
 GREETING_TZ = ZoneInfo("America/Los_Angeles")  # same zone as the HUD clock
 TIME_QUIET_S = 3.0  # and only once nothing has been said for this long
+GREETING_CAPTION_S = 4.0  # s the "Good morning · Eyezenheim" caption stays up
 TIME_CAPTION_S = 3.0  # s the "It's · 3:15" caption stays up (a driving caption takes its place right away)
 PLANTED_STEERING_PARAM = "PlantedSteering"
 
@@ -548,7 +549,14 @@ class DriveNarrator(Widget):
         return
       self._greeted = True
       hour = datetime.now(GREETING_TZ).hour
-      parts = [random.choice(greeting_choices(hour))]
+      greeting = random.choice(greeting_choices(hour))
+      parts = [greeting]
+      name = (ui_state.params.get("DriveNarrationName") or "").strip() if ui_state.params.get_bool("DriveNarrationGreetName") else ""
+      if name:
+        if spoken := name_clip(name):
+          parts.insert(0, spoken)
+        self._time_caption = greeting_caption(greeting, name)  # shown even when the name has no clip
+        self._time_caption_until = now + GREETING_CAPTION_S
       if self._weather_on and (w := self._weather.result(ui_state.params.get_bool("IsMetric"))):
         parts += weather_parts(w.temp, w.code, w.is_day, w.rain_chance)
       self._say(parts)

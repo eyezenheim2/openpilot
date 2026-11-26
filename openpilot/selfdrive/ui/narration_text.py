@@ -119,6 +119,24 @@ GREETINGS = {
 }
 
 
+# names said before the greeting ("Eyezenheim, good morning..."). Clips are pre-rendered, so a name is only spoken
+# when it's listed here (typed name, any case -> how Piper should say it); any other name is shown, not spoken.
+# To add one: add a row and run tools/narration/make_voices.py --only-missing.
+NAMES = {
+  "eyezenheim": "Eyezenheim,",
+}
+
+
+def name_clip(name: str) -> str | None:
+  return NAMES.get(name.strip().lower())
+
+
+def greeting_caption(greeting: str, name: str) -> tuple[str, str]:
+  """On-screen line for a named greeting: ("Good morning", "Eyezenheim")."""
+  first = re.split(r"(?<=[.?!])\s", greeting.strip(), maxsplit=1)[0].rstrip(".!")
+  return first, name.strip()
+
+
 def greeting_band(hour: int) -> str:
   if 5 <= hour < 12:
     return "morning"
@@ -246,6 +264,7 @@ def all_clip_texts() -> list[str]:
   phrases |= {g for lines in GREETINGS.values() for g in lines}
   phrases |= {TIME_PREFIX, TIME_AM, TIME_PM, TIME_OH}
   phrases |= {WEATHER_PREFIX, WEATHER_RAIN_LATER}
+  phrases |= set(NAMES.values())
   phrases |= {c for _, conds in WEATHER_CONDITIONS for c in conds}
   return sorted(phrases) + [str(n) for n in NUMBERS]
 

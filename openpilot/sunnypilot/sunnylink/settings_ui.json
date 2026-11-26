@@ -2161,6 +2161,19 @@
               ]
             },
             {
+              "key": "DriveNarrationGreetName",
+              "widget": "toggle",
+              "title": "Greet by Name",
+              "description": "Say your name before the greeting and show it on screen. Type the name on the device (Developer, \"your name\"). Names without a recorded voice clip are shown but not spoken.",
+              "enablement": [
+                {
+                  "type": "param",
+                  "key": "DriveNarrationGreeting",
+                  "equals": true
+                }
+              ]
+            },
+            {
               "key": "DriveNarrationWeather",
               "widget": "toggle",
               "title": "Weather in Greeting",

@@ -142,3 +142,13 @@ def test_weather_parts_have_clips():
     for is_day in (True, False):
       parts = weather_parts(70, code, is_day, 60)
       assert parts and set(parts) <= texts, (code, parts)
+
+
+def test_names():
+  from openpilot.selfdrive.ui.narration_text import NAMES, greeting_caption, name_clip
+  assert name_clip("Eyezenheim") == name_clip(" eyezenheim ") == "Eyezenheim,"
+  assert name_clip("Someone Else") is None
+  assert set(NAMES.values()) <= set(all_clip_texts())
+  assert greeting_caption("Good morning. Ready when you are.", "Eyezenheim") == ("Good morning", "Eyezenheim")
+  assert greeting_caption("Still up? Systems are ready.", "Sam") == ("Still up?", "Sam")
+  assert greeting_caption("Working late, I see. All systems are online.", "Sam")[0] == "Working late, I see"
