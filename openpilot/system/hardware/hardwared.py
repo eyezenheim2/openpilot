@@ -27,7 +27,6 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.system.statsd import statlog
 from openpilot.system.hardware.power_monitoring import PowerMonitoring
 from openpilot.system.hardware.fan_controller import FanController
-from openpilot.system.hardware import wifi_priority
 from openpilot.system.hardware.chestnut.monitoring import chestnut_state_thread
 from openpilot.system.hardware.chestnut.status import ChestnutStatus
 from openpilot.common.version import terms_version, training_version, get_build_metadata, terms_version_sp
@@ -161,7 +160,6 @@ def hw_state_thread(end_event, hw_queue):
   count = 0
   prev_hw_state = None
   prev_usb_topology = set()
-  params = Params()
 
   while not end_event.is_set():
     usb_topology = get_usb_topology()
@@ -196,12 +194,6 @@ def hw_state_thread(end_event, hw_queue):
         prev_hw_state = hw_state
       except Exception:
         cloudlog.exception("Error getting hardware state")
-
-      if COMMA_HARDWARE:
-        try:
-          wifi_priority.boost(params.get_bool(wifi_priority.PARAM))
-        except Exception:
-          cloudlog.exception("wifi_priority failed")
 
     count += 1
     time.sleep(DT_HW)
