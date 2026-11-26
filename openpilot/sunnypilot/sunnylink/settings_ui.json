@@ -1804,6 +1804,12 @@
           "description": "Remote access and debugging interfaces",
           "items": [
             {
+              "key": "WifiHighPriority",
+              "widget": "toggle",
+              "title": "Wi-Fi High Priority",
+              "description": "Run the Wi-Fi services (NetworkManager, wpa_supplicant) at high CPU priority so joining a saved network and staying connected isn't slowed while driving. openpilot's control loops still always come first."
+            },
+            {
               "key": "AdbEnabled",
               "widget": "toggle",
               "blocked": true,

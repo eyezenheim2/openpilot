@@ -337,6 +337,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DriveNarrationWeatherCache", {PERSISTENT, JSON}},  // stored 2-day hourly forecast, so later drives need no internet
     {"DriveNarrationSay", {CLEAR_ON_MANAGER_START, JSON}},  // UI -> soundd: {"id", "time", "voice", "volume", "parts"}
     {"AlertVolumeFloor", {PERSISTENT | BACKUP, INT, "30"}},  // %, quietest openpilot alerts get in a quiet cabin (stock ~7)
+    {"WifiHighPriority", {PERSISTENT | BACKUP, BOOL, "1"}},  // run NetworkManager/wpa_supplicant at high CPU priority (wifi_priority.py)
     {"UsbAudioOutput", {PERSISTENT | BACKUP, BOOL, "1"}},  // play all sounds on a USB speaker when one is plugged in
     {"UsbAudioAlarmBackup", {PERSISTENT | BACKUP, BOOL, "1"}},  // urgent alarms also on the built-in speaker while on USB
     {"OnroadStyle", {PERSISTENT | BACKUP, INT, "2"}},  // 0 normal, 1 gta, 2 top view
