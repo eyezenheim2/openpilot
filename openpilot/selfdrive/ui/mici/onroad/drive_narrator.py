@@ -27,8 +27,8 @@ from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.narration_text import (Msg, TEXT, VOICES, SpeechTrigger,
-                                                               greeting_caption, greeting_choices, name_clip, spoken_parts, time_caption, time_parts,
-                                                               weather_parts, StopAndGo)
+                                                               greeting_caption, greeting_choices, name_clip, resolve_name,
+                                                               spoken_parts, time_caption, time_parts, weather_parts, StopAndGo)
 from openpilot.common.params import Params
 from openpilot.selfdrive.ui.narration_weather import CACHE_PARAM, WeatherFetcher, position_from_param
 
@@ -551,7 +551,10 @@ class DriveNarrator(Widget):
       hour = datetime.now(GREETING_TZ).hour
       greeting = random.choice(greeting_choices(hour))
       parts = [greeting]
-      name = (ui_state.params.get("DriveNarrationName") or "").strip() if ui_state.params.get_bool("DriveNarrationGreetName") else ""
+      params = ui_state.params
+      name = ""
+      if params.get_bool("DriveNarrationGreetName"):
+        name = resolve_name(int(params.get("DriveNarrationNameId", return_default=True) or 0), params.get("DriveNarrationName") or "")
       if name:
         if spoken := name_clip(name):
           parts.insert(0, spoken)

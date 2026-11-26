@@ -331,6 +331,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DriveNarrationGreeting", {PERSISTENT | BACKUP, BOOL, "1"}},  // spoken greeting when openpilot goes onroad
     {"DriveNarrationGreetName", {PERSISTENT | BACKUP, BOOL, "1"}},  // say DriveNarrationName before the greeting (and show it)
     {"DriveNarrationName", {PERSISTENT | BACKUP, STRING, ""}},  // driver's name for the greeting, typed in developer settings
+    {"DriveNarrationNameId", {PERSISTENT | BACKUP, INT, "0"}},  // sunnylink name pick: 1+ = narration_text.NAMES, 0 = DriveNarrationName
     {"DriveNarrationTime", {PERSISTENT | BACKUP, BOOL, "1"}},  // in stop-and-go traffic, say the time once per quarter hour while stopped
     {"DriveNarrationWeather", {PERSISTENT | BACKUP, BOOL, "1"}},  // after the greeting, the weather for this hour (Open-Meteo, at the last GPS fix)
     {"DriveNarrationWeatherCache", {PERSISTENT, JSON}},  // stored 2-day hourly forecast, so later drives need no internet

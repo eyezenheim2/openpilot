@@ -120,15 +120,25 @@ GREETINGS = {
 
 
 # names said before the greeting ("Eyezenheim, good morning..."). Clips are pre-rendered, so a name is only spoken
-# when it's listed here (typed name, any case -> how Piper should say it); any other name is shown, not spoken.
-# To add one: add a row and run tools/narration/make_voices.py --only-missing.
-NAMES = {
-  "eyezenheim": "Eyezenheim,",
-}
+# when it's listed here as (name, how Piper should say it); any other typed name is shown, not spoken.
+# The list is also the sunnylink "Your Name" dropdown (DriveNarrationNameId = position + 1, 0 = typed on the device),
+# so only ever add rows at the end. To add one: add a row, add the option in settings_ui_src/pages/developer.yaml,
+# and run tools/narration/make_voices.py --only-missing.
+NAMES = [
+  ("Eyezenheim", "Eyezenheim,"),
+]
 
 
 def name_clip(name: str) -> str | None:
-  return NAMES.get(name.strip().lower())
+  key = name.strip().lower()
+  return next((spoken for display, spoken in NAMES if display.lower() == key), None)
+
+
+def resolve_name(name_id: int, typed: str) -> str:
+  """Name to greet: the sunnylink pick when one is chosen, else what was typed on the device."""
+  if 1 <= name_id <= len(NAMES):
+    return NAMES[name_id - 1][0]
+  return typed.strip()
 
 
 def greeting_caption(greeting: str, name: str) -> tuple[str, str]:
@@ -264,7 +274,7 @@ def all_clip_texts() -> list[str]:
   phrases |= {g for lines in GREETINGS.values() for g in lines}
   phrases |= {TIME_PREFIX, TIME_AM, TIME_PM, TIME_OH}
   phrases |= {WEATHER_PREFIX, WEATHER_RAIN_LATER}
-  phrases |= set(NAMES.values())
+  phrases |= {spoken for _, spoken in NAMES}
   phrases |= {c for _, conds in WEATHER_CONDITIONS for c in conds}
   return sorted(phrases) + [str(n) for n in NUMBERS]
 

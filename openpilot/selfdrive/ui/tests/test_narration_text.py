@@ -145,10 +145,24 @@ def test_weather_parts_have_clips():
 
 
 def test_names():
-  from openpilot.selfdrive.ui.narration_text import NAMES, greeting_caption, name_clip
+  import json
+  from openpilot.selfdrive.ui.narration_text import NAMES, greeting_caption, name_clip, resolve_name
   assert name_clip("Eyezenheim") == name_clip(" eyezenheim ") == "Eyezenheim,"
   assert name_clip("Someone Else") is None
-  assert set(NAMES.values()) <= set(all_clip_texts())
+  assert {s for _, s in NAMES} <= set(all_clip_texts())
+  assert resolve_name(1, "") == "Eyezenheim" and resolve_name(0, " Sam ") == "Sam" and resolve_name(99, "Sam") == "Sam"
+  # the sunnylink dropdown lists the same names in the same order
+  ui = json.loads((Path(__file__).resolve().parents[3] / "sunnypilot" / "sunnylink" / "settings_ui.json").read_text())
+  def find(node):
+    if isinstance(node, dict):
+      if node.get("key") == "DriveNarrationNameId":
+        return node
+      node = list(node.values())
+    if isinstance(node, list):
+      return next((r for n in node if (r := find(n))), None)
+    return None
+  opts = find(ui)["options"]
+  assert [(o["value"], o["label"]) for o in opts[1:]] == [(i + 1, d) for i, (d, _) in enumerate(NAMES)]
   assert greeting_caption("Good morning. Ready when you are.", "Eyezenheim") == ("Good morning", "Eyezenheim")
   assert greeting_caption("Still up? Systems are ready.", "Sam") == ("Still up?", "Sam")
   assert greeting_caption("Working late, I see. All systems are online.", "Sam")[0] == "Working late, I see"

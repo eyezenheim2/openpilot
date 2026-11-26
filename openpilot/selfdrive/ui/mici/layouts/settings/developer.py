@@ -106,7 +106,7 @@ class DeveloperLayoutMici(NavScroller):
                                                                "when one is plugged in. Voice, volume and greeting are in sunnylink.")
     self._greet_name_toggle = BigParamControl("greet by name", "DriveNarrationGreetName",
                                               description="Say your name before the onroad greeting and show it on screen. " +
-                                                          "Set the name below. Names without a recorded voice clip are only shown.")
+                                                          "Pick it in sunnylink, or type it below. Names without a recorded voice clip are only shown.")
 
     def name_callback(name: str):
       name = name.strip()[:24]
@@ -118,7 +118,7 @@ class DeveloperLayoutMici(NavScroller):
                                          minimum_length=0, confirm_callback=name_callback))
 
     self._name_btn = BigButton("your name", ui_state.params.get("DriveNarrationName") or "Not set",
-                               description="The name the narration greets you by.")
+                               description="The name the narration greets you by, when none is picked in sunnylink.")
     self._name_btn.set_click_callback(name_click)
     self._usb_audio_toggle = BigParamControl("usb speaker", "UsbAudioOutput",
                                              description="Play all sounds through a USB speaker when one is plugged in. " +
