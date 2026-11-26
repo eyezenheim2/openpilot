@@ -548,8 +548,8 @@ class DriveNarrator(Widget):
       if self._weather_on and self._weather.busy and now - self._loaded_at < GREETING_DELAY + WEATHER_WAIT:
         return
       self._greeted = True
-      hour = datetime.now(GREETING_TZ).hour
-      greeting = random.choice(greeting_choices(hour))
+      t = datetime.now(GREETING_TZ)
+      greeting = random.choice(greeting_choices(t.hour))
       parts = [greeting]
       params = ui_state.params
       name = ""
@@ -562,6 +562,9 @@ class DriveNarrator(Widget):
         self._time_caption_until = now + GREETING_CAPTION_S
       if self._weather_on and (w := self._weather.result(ui_state.params.get_bool("IsMetric"))):
         parts += weather_parts(w.temp, w.code, w.is_day, w.rain_chance)
+      if self._time_on:  # chime + "It's 7:42 A.M." to close the greeting; counts as this quarter hour's time announcement
+        parts += time_parts(t.hour, t.minute)
+        self._time_announced = (t.toordinal(), t.hour, t.minute // 15)
       self._say(parts)
 
   def _update_time(self, now: float, i: NarratorInputs, in_traffic: bool) -> None:
