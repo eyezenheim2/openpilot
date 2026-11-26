@@ -2,7 +2,7 @@
 
   Car ahead slowing · I'm slowing down       Stop sign · Stopping
   Car cutting in · Making room               Curve ahead · Easing off
-  Set to 65 · Speeding up                    Near steering limit · Be ready
+  Set to 65 · Speeding up                    Car merging in · Watching it
   ...
 
 The decision part (NarratorLogic) only sees plain numbers (NarratorInputs) so it can be tested and
@@ -48,8 +48,8 @@ ACCENT = {
   Msg.PLANTED: TEAL, Msg.LANES_FADED: AMBER, Msg.WAITING: WHITE, Msg.PULLING_AWAY: GREEN, Msg.GOING: GREEN,
   Msg.SIGN_GO: GREEN, Msg.GREEN_LIGHT: GREEN, Msg.ROAD_CLEAR: GREEN, Msg.SET_SPEED_UP: GREEN, Msg.SET_SPEED_DOWN: BLUE,
   Msg.MORE_ROOM: BLUE, Msg.LESS_ROOM: GREEN, Msg.SPEED_LIMIT: BLUE, Msg.CURVE: BLUE, Msg.SLOWING: BLUE,
-  Msg.STOP_AHEAD: RED, Msg.STOP_SIGN: RED, Msg.STOPPING: RED, Msg.MERGING: AMBER, Msg.STEER_LIMIT: ORANGE,
-  Msg.CUT_IN: ORANGE, Msg.GAS_OVERRIDE: WHITE, Msg.EYES: AMBER,
+  Msg.STOP_AHEAD: RED, Msg.STOP_SIGN: RED, Msg.STOPPING: RED, Msg.MERGING: AMBER,
+  Msg.CUT_IN: ORANGE, Msg.EYES: AMBER,
 }
 
 # minimum time a caption stays up once shown, so it can be read
@@ -93,8 +93,6 @@ PERSONALITY_WINDOW = 8.0  # s after a follow-distance change
 PULL_AWAY_LEAD = 1.0  # m/s lead opening on us
 PULL_AWAY_ACCEL = 0.3  # m/s^2
 EYES_AWARENESS = (62, 95)  # %: distracted and draining, but before openpilot's first alert (~61%)
-STEER_LIMIT_OUTPUT = 0.85  # fraction of max steering torque
-STEER_LIMIT_MIN_SPEED = 5.0  # m/s
 LANES_FADED_PROB = 0.3
 LANES_FADED_MIN_SPEED = 11.0  # m/s (~25 mph)
 # planted steering's low-speed wobble gate (mirrors latcontrol_pid.WobbleGate)
@@ -118,7 +116,6 @@ class NarratorInputs:
   standstill: bool = False
   accel_cmd: float = 0.0  # m/s^2 openpilot is asking for
   should_stop: bool = False
-  gas_pressed: bool = False
   # car ahead (radarState.leadOne)
   lead_present: bool = False
   lead_d: float = 0.0  # m
@@ -143,7 +140,6 @@ class NarratorInputs:
   dm_awareness: int = 100  # %
   dm_alert: int = 0
   # steering
-  steer_output: float = 0.0  # fraction of max torque, signed
   lane_probs: tuple[float, float] = (1.0, 1.0)  # left, right inner lane lines
   planted_on: bool = False
   steer_request_deg: float = 0.0
@@ -265,8 +261,6 @@ class NarratorLogic:
     # driver and steering: apply whenever openpilot is steering
     if i.dm_distracted and EYES_AWARENESS[0] < i.dm_awareness < EYES_AWARENESS[1] and i.dm_alert == 0:
       out.append((Msg.EYES, 0))
-    if i.lat_active and i.v_ego > STEER_LIMIT_MIN_SPEED and abs(i.steer_output) > STEER_LIMIT_OUTPUT:
-      out.append((Msg.STEER_LIMIT, 0))
     if i.lat_active and i.v_ego > LANES_FADED_MIN_SPEED and max(i.lane_probs) < LANES_FADED_PROB:
       out.append((Msg.LANES_FADED, 0))
     if gate:
@@ -274,8 +268,6 @@ class NarratorLogic:
 
     if not i.has_long:
       return out
-    if i.gas_pressed:
-      out.append((Msg.GAS_OVERRIDE, 0))
     if not i.long_active:
       self._waiting = False
       return out
@@ -481,7 +473,6 @@ class DriveNarrator(Widget):
     vision_dm = dm.activePolicy == log.DriverMonitoringState.MonitoringPolicy.vision
     lat = sm['controlsState'].lateralControlState
     which = lat.which()
-    steer_output = float(getattr(lat, which).output) if which in ('pidState', 'torqueState') else 0.0
     steer_request = float(lat.pidState.steeringAngleDesiredDeg) if which == 'pidState' else 0.0
 
     vel_x = list(model.velocity.x) if model_ok else []
@@ -497,7 +488,6 @@ class DriveNarrator(Widget):
       standstill=bool(cs.standstill),
       accel_cmd=float(cc.actuators.accel),
       should_stop=bool(sm.alive['longitudinalPlan'] and plan.shouldStop),
-      gas_pressed=bool(cs.gasPressed),
       lead_present=present,
       lead_d=float(lead.dRel),
       lead_v=float(lead.vLead),
@@ -518,7 +508,6 @@ class DriveNarrator(Widget):
       dm_distracted=bool(vision_dm and dm.visionPolicyState.isDistracted),
       dm_awareness=int(dm.visionPolicyState.awarenessPercent) if vision_dm else 100,
       dm_alert=int(dm.alertLevel.raw),
-      steer_output=steer_output,
       lane_probs=(float(probs[1]), float(probs[2])) if len(probs) >= 3 else (1.0, 1.0),
       planted_on=self._planted,
       steer_request_deg=steer_request,

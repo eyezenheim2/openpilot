@@ -32,9 +32,7 @@ class Msg(IntEnum):
   STOP_SIGN = 17
   STOPPING = 18
   MERGING = 19
-  STEER_LIMIT = 20
   CUT_IN = 21
-  GAS_OVERRIDE = 22
   EYES = 23
 
 
@@ -59,9 +57,7 @@ TEXT = {
   Msg.STOP_SIGN: ("Stop sign", "Stopping"),
   Msg.STOPPING: ("Car ahead stopped", "I'm stopping"),
   Msg.MERGING: ("Car merging in", "Watching it"),
-  Msg.STEER_LIMIT: ("Near steering limit", "Be ready"),
   Msg.CUT_IN: ("Car cutting in", "Making room"),
-  Msg.GAS_OVERRIDE: ("You're on the gas", "I'll take back over"),
   Msg.EYES: ("Eyes on the road", "please"),
 }
 
@@ -86,9 +82,7 @@ SPOKEN = {
   Msg.STOP_SIGN: ["Stop sign.", "Stopping."],
   Msg.STOPPING: ["Car ahead stopped.", "I'm stopping."],
   Msg.MERGING: ["Car merging in.", "Watching it."],
-  Msg.STEER_LIMIT: ["Near steering limit.", "Be ready."],
   Msg.CUT_IN: ["Car cutting in.", "Making room."],
-  Msg.GAS_OVERRIDE: ["You're on the gas.", "I'll take back over."],
   Msg.EYES: ["Eyes on the road, please."],
 }
 
@@ -200,9 +194,8 @@ def time_caption(hour: int, minute: int) -> str:
   return f"{hour % 12 or 12}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
 
 
-# shown but not spoken: PLANTED fires often at low speed and is a tuning aid rather than news;
-# STEER_LIMIT and GAS_OVERRIDE were muted at the driver's request (the captions still show)
-NOT_SPOKEN = {Msg.PLANTED, Msg.STEER_LIMIT, Msg.GAS_OVERRIDE}
+# shown but not spoken: fires often at low speed and is a tuning aid rather than news
+NOT_SPOKEN = {Msg.PLANTED}
 
 NUMBERS = range(1, 161)  # speeds that can be spoken (mph or km/h)
 

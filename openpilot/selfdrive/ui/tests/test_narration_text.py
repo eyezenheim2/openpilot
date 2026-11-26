@@ -126,12 +126,6 @@ def test_creeping_does_not_count_as_new_stops():
   assert not run_traffic([(10.0, 130), (0.0, 10), (1.0, 5), (0.0, 10), (1.0, 5), (0.0, 10)])
 
 
-def test_muted_lines_still_captioned():
-  for m in (Msg.STEER_LIMIT, Msg.GAS_OVERRIDE):
-    assert m in NOT_SPOKEN and m in TEXT
-  assert run_trigger([(Msg.STEER_LIMIT, 0, 3.0), (Msg.GAS_OVERRIDE, 0, 3.0)]) == []
-
-
 def test_weather_parts():
   assert weather_parts(58.4, 45, True, 10) == ["Currently", "58", "degrees and foggy."]
   assert weather_parts(52, 0, False, 10) == ["Currently", "52", "degrees and clear."]

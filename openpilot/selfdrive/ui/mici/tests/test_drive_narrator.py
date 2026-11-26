@@ -187,19 +187,10 @@ def test_lead_pulling_away():
 
 # ---- driver, steering ----
 
-def test_gas_override():
-  assert shown(run([(2.0, follow(long_active=False, gas_pressed=True))])) == [Msg.GAS_OVERRIDE]
-
-
 def test_eyes_on_road_before_openpilot_alert():
   assert shown(run([(2.0, follow(dm_distracted=True, dm_awareness=80))])) == [Msg.EYES]
   # openpilot's own alert has taken over
   assert shown(run([(2.0, follow(dm_distracted=True, dm_awareness=55, dm_alert=1))])) == []
-
-
-def test_steer_limit():
-  assert shown(run([(2.0, follow(lat_active=True, steer_output=0.92))])) == [Msg.STEER_LIMIT]
-  assert shown(run([(2.0, follow(lat_active=True, steer_output=0.6))])) == []
 
 
 def test_lanes_faded_needs_to_persist():
@@ -224,7 +215,7 @@ def test_planted_steering_gate():
 
 
 def test_disengaged_is_quiet():
-  assert shown(run([(3.0, follow(engaged=False, accel_cmd=-2.0, lead_v_rel=-3.0, gas_pressed=True))])) == []
+  assert shown(run([(3.0, follow(engaged=False, accel_cmd=-2.0, lead_v_rel=-3.0))])) == []
 
 
 def test_priority_cut_in_over_slowing():
