@@ -416,7 +416,7 @@ class DriveNarrator(Widget):
     self._enabled = True
     self._planted = False
     self._voice = True
-    self._voice_dir = VOICES[0][0]
+    self._voice_dir = VOICES[1][0]
     self._greeting = True
     self._volume = 80
     self._param_checked = -1.0
@@ -525,7 +525,7 @@ class DriveNarrator(Widget):
     """Test line for the onroad volume bar, at the new level right away (soundd only rereads the setting every 2 s)."""
     self._volume = volume
     voice_id = int(ui_state.params.get("DriveNarrationVoiceId", return_default=True) or 0)
-    self._voice_dir = VOICES[voice_id][0] if 0 <= voice_id < len(VOICES) else VOICES[0][0]
+    self._voice_dir = VOICES[voice_id][0] if 0 <= voice_id < len(VOICES) else VOICES[1][0]
     self._say(spoken_parts(Msg.SLOWING))
 
   def _update_greeting(self, now: float) -> None:
@@ -593,7 +593,7 @@ class DriveNarrator(Widget):
       self._weather_on = params.get_bool("DriveNarrationWeather")
       self._volume = int(params.get("DriveNarrationVolume", return_default=True) or 0)
       voice_id = int(params.get("DriveNarrationVoiceId", return_default=True) or 0)
-      self._voice_dir = VOICES[voice_id][0] if 0 <= voice_id < len(VOICES) else VOICES[0][0]
+      self._voice_dir = VOICES[voice_id][0] if 0 <= voice_id < len(VOICES) else VOICES[1][0]
 
     self._update_greeting(now)
 

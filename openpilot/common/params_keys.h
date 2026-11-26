@@ -326,7 +326,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"PlantedSteering", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"DriveNarration", {PERSISTENT | BACKUP, BOOL, "1"}},  // onroad captions: "car ahead slowing / I'm slowing down", cut-ins, merges
     {"DriveNarrationVoice", {PERSISTENT | BACKUP, BOOL, "1"}},  // speak the captions (clips in assets/sounds/narration)
-    {"DriveNarrationVoiceId", {PERSISTENT | BACKUP, INT, "0"}},  // index into narration_text.VOICES (0 = Voice A)
+    {"DriveNarrationVoiceId", {PERSISTENT | BACKUP, INT, "1"}},  // index into narration_text.VOICES (1 = Voice B, the default)
     {"DriveNarrationVolume", {PERSISTENT | BACKUP, INT, "80"}},  // %, narration level relative to the alert sounds
     {"DriveNarrationGreeting", {PERSISTENT | BACKUP, BOOL, "1"}},  // spoken greeting when openpilot goes onroad
     {"DriveNarrationGreetName", {PERSISTENT | BACKUP, BOOL, "1"}},  // say DriveNarrationName before the greeting (and show it)
