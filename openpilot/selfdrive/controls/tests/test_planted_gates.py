@@ -53,3 +53,33 @@ def test_unwinding():
   assert not unwinding(90.0, 80.0)  # still turning in
   assert not unwinding(-5.0, 20.0)  # crossed to the other side: normal smoothing
   assert not unwinding(2.0, UNWIND_MIN_ANGLE - 1.0)  # small angles on a straight keep the wobble smoothing
+
+
+def run_wind_in(requests, wheel, v=7.0):
+  """requests: list of (seconds, start_deg, end_deg) ramps. Returns the list of hold flags, one per frame."""
+  from openpilot.selfdrive.controls.lib.latcontrol_pid import WindInStop
+  stop, flags = WindInStop(DT), []
+  for seconds, a, b in requests:
+    n = round(seconds / DT)
+    for k in range(n):
+      flags.append(stop.update(a + (b - a) * k / n, wheel, v))
+  return flags
+
+
+def test_wind_in_stop_holds_once_the_turn_peaks():
+  # request climbs to 140 deg, then eases off at 60 deg/s while the wheel (70 deg) is still behind it
+  flags = run_wind_in([(2.0, 0., 140.), (1.0, 140., 80.)], wheel=70.)
+  assert not any(flags[:200])  # never while turning in
+  assert any(flags[200:])
+
+
+def test_wind_in_stop_ignores_mid_turn_wiggle():
+  # steady turn with the model's usual +-3 deg wiggle
+  frames = [(1.5, 0., 120.)] + [(0.25, 120., 117.), (0.25, 117., 120.)] * 8
+  assert not any(run_wind_in(frames, wheel=70.))
+
+
+def test_wind_in_stop_lets_go_when_unwinding_or_fast():
+  flags = run_wind_in([(2.0, 0., 140.), (1.0, 140., 80.)], wheel=100.)
+  assert any(flags[200:260]) and not any(flags[-30:])  # holds while the request is above the wheel, lets go below it
+  assert not any(run_wind_in([(2.0, 0., 140.), (1.0, 140., 80.)], wheel=70., v=15.))  # off above ~25 mph

@@ -90,6 +90,49 @@ def unwinding(request: float, smoothed: float) -> bool:
   return abs(smoothed) > UNWIND_MIN_ANGLE and request * smoothed >= 0. and abs(request) < abs(smoothed)
 
 
+# Wind-in stop: prevent oversteer in the first place. On slow turns the model's steering command runs ~1.7x its own
+# planned path (seg 11 of 5bb5f789ca: 147 deg asked, the wheel topped out near 80 at full torque), so the wheel is always
+# behind the request and keeps winding in for ~2 s after the turn has peaked (66 -> 80 deg while the request was already
+# falling). Once the request is clearly easing off (WINDIN_EASE_DEG below its peak for this turn and falling faster than
+# WINDIN_EASE_RATE), openpilot stops adding turn and holds the target at the wheel's current angle, so the wheel starts
+# coming out with the request instead of after it. Normal tracking resumes as soon as the request is below the wheel
+# (unwinding) or starts rising again. Low speed only, where the over-request happens.
+WINDIN_SPEED_MAX = 11.0  # m/s (~25 mph): off above
+WINDIN_MIN_REQUEST = 10.0  # deg, |request| below this isn't a turn
+WINDIN_EASE_DEG = 10.0  # deg the request must have dropped from its peak in this turn
+WINDIN_EASE_RATE = 20.0  # deg/s the request must be heading back to center at
+WINDIN_RATE_RC = 0.2  # s, smoothing on the request rate (the model's request wiggles a few degrees at ~1 Hz)
+
+
+class WindInStop:
+  def __init__(self, dt):
+    self.dt = dt
+    self.reset()
+
+  def reset(self):
+    self.prev: float | None = None
+    self.rate = 0.0
+    self.peak = 0.0  # |request| peak in the current turn, signed side kept in self.side
+    self.side = 0.0
+
+  def update(self, request: float, wheel: float, v_ego: float) -> bool:
+    """True while openpilot should stop winding the wheel further in (hold it where it is)."""
+    if self.prev is not None:
+      self.rate += ((request - self.prev) / self.dt - self.rate) * self.dt / (WINDIN_RATE_RC + self.dt)
+    self.prev = request
+
+    side = math.copysign(1., request) if abs(request) >= WINDIN_MIN_REQUEST else 0.
+    if side == 0. or side != self.side:  # straight, or a new turn the other way
+      self.side, self.peak = side, abs(request)
+      return False
+    self.peak = max(self.peak, abs(request))
+
+    easing = (self.peak - abs(request) >= WINDIN_EASE_DEG and request * self.rate < 0. and
+              abs(self.rate) >= WINDIN_EASE_RATE)
+    winding_in = wheel * request > 0. and abs(request) > abs(wheel)
+    return bool(v_ego < WINDIN_SPEED_MAX and easing and winding_in)
+
+
 def _scale_gain(gain, scale):
   bp, v = gain
   return list(bp), [x * scale for x in v]
@@ -133,11 +176,13 @@ class LatControlPID(LatControl):
     self._last_angle_des: float | None = None
     self._wobble_gate = WobbleGate(dt)
     self._oversteer_gate = OversteerGate(dt)
+    self._wind_in_stop = WindInStop(dt)
     self._update_planted()
 
   def _reset_planted_filters(self):
     self._wobble_gate.reset()
     self._oversteer_gate.reset()
+    self._wind_in_stop.reset()
     self._desired_angle.initialized = False
     self._wheel_rate.initialized = False
     self._desired_rate.x = 0.0
@@ -187,9 +232,17 @@ class LatControlPID(LatControl):
       exiting = self._desired_angle.initialized and unwinding(gated_request, self._desired_angle.x)
       self._desired_angle.update_alpha(UNWIND_FILTER_RC if exiting else PLANTED_DESIRED_FILTER_RC)
       angle_steers_des_no_offset = self._desired_angle.update(gated_request)
+      rate_ref_no_offset = angle_steers_des_no_offset
+      wheel_no_offset = CS.steeringAngleDeg - params.angleOffsetDeg
+      if self._wind_in_stop.update(angle_request_no_offset, wheel_no_offset, CS.vEgo) and \
+         abs(angle_steers_des_no_offset) > abs(wheel_no_offset):
+        angle_steers_des_no_offset = wheel_no_offset  # turn has peaked: hold the wheel, don't wind further in
     else:
       angle_steers_des_no_offset = angle_request_no_offset
+      rate_ref_no_offset = angle_steers_des_no_offset
     angle_steers_des = angle_steers_des_no_offset + params.angleOffsetDeg
+    # the damping term follows the smoothed request, not the wind-in hold, so engaging the hold doesn't kick the wheel
+    rate_ref = rate_ref_no_offset + params.angleOffsetDeg
     error = angle_steers_des - CS.steeringAngleDeg
     pid_log.angleError = error
 
@@ -202,8 +255,8 @@ class LatControlPID(LatControl):
       if self._last_angle_des is None:
         self._desired_rate.x = 0.0
       else:
-        self._desired_rate.update((angle_steers_des - self._last_angle_des) / self.dt)
-      self._last_angle_des = angle_steers_des
+        self._desired_rate.update((rate_ref - self._last_angle_des) / self.dt)
+      self._last_angle_des = rate_ref
       error_rate = self._desired_rate.x - self._wheel_rate.update(CS.steeringRateDeg)
 
       # offset does not contribute to resistive torque
