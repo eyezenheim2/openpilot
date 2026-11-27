@@ -63,6 +63,10 @@ TSR_VERSION, TSR_STOP = 2, 121  # car's Traffic Sign Recognition code for a stop
 SIGN_MEMORY = 3.0  # s: a stop sign recognised this recently confirms a rolling stop as a stop sign
 SIGN_COMFORT_DECEL = 2.2  # m/s2: if the sign is confirmed late, stop a little closer (never past the slow point) rather than brake harder
 SIGN_SLOW_POINT_GAP = 1.0  # m: the stop is always at least this far before the model's slow point
+# stop signs aim half as far short of the model's slow point as lights do (lights: 90% - 4.5 m, ~8 m short at 35 m).
+# Driver feedback: stops ended too far back from the sign; this halves that gap to ~4 m.
+SIGN_STOP_FRACTION = 0.95
+SIGN_STOP_MARGIN = 2.25  # m
 # stop-sign stops ease off at the end, like a driver feathering the brake, instead of holding ~2 m/s2 down to walking
 # pace and letting go all at once (drive logs: -1.8..-2.3 m/s2 held to ~1 m/s, then a dip-and-rebound at the stop).
 # Below TAIL_V the decel tapers linearly from TAIL_A[1] to TAIL_A[0] at standstill; the approach above TAIL_V
@@ -172,7 +176,7 @@ class StopLineAssist:
     slow_x = float(x[i])
     if not (ROLL_MIN_DIST < slow_x < ROLL_MAX_DIST) or self._lead_before(sm, slow_x):
       return None
-    dist = max(MIN_TARGET_DIST, STOP_FRACTION * slow_x - STOP_MARGIN)
+    dist = max(MIN_TARGET_DIST, SIGN_STOP_FRACTION * slow_x - SIGN_STOP_MARGIN)
     # confirmed late (close to the sign): ease the stop point toward the slow point instead of braking harder
     comfortable = max(v_ego * v_ego - TAIL_V * TAIL_V, 0.0) / (2.0 * SIGN_COMFORT_DECEL) + _tail_dist(min(v_ego, TAIL_V))
     return max(dist, min(comfortable, slow_x - SIGN_SLOW_POINT_GAP))
