@@ -613,12 +613,13 @@ class DriveNarrator(Widget):
 
     inputs = self._inputs()
     msg = self._logic.update(inputs, now)
-    self._update_time(now, inputs, self._traffic.update(inputs.v_ego, now))
+    in_traffic = self._traffic.update(inputs.v_ego, now)
+    self._update_time(now, inputs, in_traffic)
     # stay out from under openpilot's own alerts
     if sm['selfdriveState'].alertSize != log.SelfdriveState.AlertSize.none:
       msg = Msg.NONE
 
-    if self._voice and (parts := self._speech.update(msg, self._logic.value, now)):
+    if self._voice and (parts := self._speech.update(msg, self._logic.value, now, in_traffic)):
       self._say(parts)
 
     visible = msg != Msg.NONE

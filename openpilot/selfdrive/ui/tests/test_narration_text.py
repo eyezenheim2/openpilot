@@ -46,10 +46,11 @@ def test_greetings():
 
 
 def run_trigger(frames, dt=0.05):
+  """frames: (msg, value, duration) or (msg, value, duration, in_traffic)."""
   trig, t, said = SpeechTrigger(), 0.0, []
-  for msg, value, dur in frames:
+  for msg, value, dur, *traffic in frames:
     for _ in range(round(dur / dt)):
-      if parts := trig.update(msg, value, t):
+      if parts := trig.update(msg, value, t, bool(traffic and traffic[0])):
         said.append((round(t, 2), parts))
       t += dt
   return said
@@ -58,6 +59,16 @@ def run_trigger(frames, dt=0.05):
 def test_speaks_once_per_caption():
   said = run_trigger([(Msg.SLOWING, 0, 3.0)])
   assert [p for _, p in said] == [["Car ahead slowing.", "I'm slowing down."]]
+
+
+def test_slowing_and_stopping_quiet_in_stop_and_go():
+  assert run_trigger([(Msg.SLOWING, 0, 3.0, True), (Msg.NONE, 0, 1.0), (Msg.STOPPING, 0, 3.0, True)]) == []
+  # other lines still speak in traffic
+  assert [p for _, p in run_trigger([(Msg.GOING, 0, 2.0, True)])] == [["Car ahead moving.", "Going."]]
+  # a caption that started in traffic isn't said late when traffic clears mid-caption
+  assert run_trigger([(Msg.STOPPING, 0, 1.0, True), (Msg.STOPPING, 0, 2.0, False)]) == []
+  # outside traffic they're spoken as before
+  assert len(run_trigger([(Msg.STOPPING, 0, 2.0, False)])) == 1
 
 
 def test_no_quick_repeat_but_repeats_later():

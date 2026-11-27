@@ -224,6 +224,8 @@ def time_caption(hour: int, minute: int) -> str:
 
 # shown but not spoken: fires often at low speed and is a tuning aid rather than news
 NOT_SPOKEN = {Msg.PLANTED}
+# shown but not spoken in stop-and-go traffic (see StopAndGo), where they'd repeat every few car lengths
+QUIET_IN_TRAFFIC = {Msg.SLOWING, Msg.STOPPING}
 
 NUMBERS = range(1, 161)  # speeds that can be spoken (mph or km/h)
 
@@ -289,8 +291,9 @@ class SpeechTrigger:
     self.pending_spoken = False
     self.last_spoken: dict[Msg, tuple[float, int]] = {}
 
-  def update(self, msg: Msg, value: int, now: float) -> list[str] | None:
-    """Call every frame with the caption on screen (Msg.NONE when none). Returns clip texts to speak, or None."""
+  def update(self, msg: Msg, value: int, now: float, in_traffic: bool = False) -> list[str] | None:
+    """Call every frame with the caption on screen (Msg.NONE when none). Returns clip texts to speak, or None.
+    In stop-and-go traffic the QUIET_IN_TRAFFIC captions are skipped, not held back to be said later."""
     if msg == Msg.NONE:
       self.pending = None
       return None
@@ -302,6 +305,8 @@ class SpeechTrigger:
     if now - self.pending[2] < settle:
       return None
     self.pending_spoken = True
+    if in_traffic and msg in QUIET_IN_TRAFFIC:
+      return None
     last = self.last_spoken.get(msg)
     if last is not None and now - last[0] < self.REPEAT_GAP and last[1] == value:
       return None
