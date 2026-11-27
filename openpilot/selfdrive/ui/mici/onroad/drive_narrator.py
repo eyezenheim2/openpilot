@@ -435,6 +435,20 @@ class DriveNarrator(Widget):
     self._last_said_at = -1e9
     self._time_announced: tuple[int, int, int] | None = None  # (day, hour, quarter) already announced
     self._last_gear = None  # carState.gearShifter last frame, None until seen this onroad session
+    self._session_frame: int | None = None  # ui_state.started_frame of the onroad session the state above belongs to
+
+  def _check_new_session(self) -> None:
+    """Start fresh on every new onroad session. The onroad view (and so this widget) isn't drawn while offroad, so the
+    narrator can't count on seeing ui_state.started go False between drives when the device stays on; started_frame
+    changes on every onroad start, drawn or not."""
+    if not ui_state.started or ui_state.started_frame == self._session_frame:
+      return
+    self._session_frame = ui_state.started_frame
+    self._greeted, self._loaded_at, self._weather_started = False, None, False
+    self._last_gear = None
+    self._logic.reset()
+    self._speech = SpeechTrigger()
+    self._traffic = StopAndGo()
 
   def _inputs(self) -> NarratorInputs:
     sm = ui_state.sm
@@ -627,6 +641,7 @@ class DriveNarrator(Widget):
       voice_id = int(params.get("DriveNarrationVoiceId", return_default=True) or 0)
       self._voice_dir = VOICES[voice_id][0] if 0 <= voice_id < len(VOICES) else VOICES[1][0]
 
+    self._check_new_session()
     self._update_greeting(now)
     self._update_park(now)
 
