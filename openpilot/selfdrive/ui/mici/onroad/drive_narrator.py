@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pyray as rl
 
+from opendbc.car.structs import car
 from openpilot.cereal import custom, log
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import FontWeight, gui_app
@@ -40,6 +41,7 @@ TIME_QUIET_S = 3.0  # and only once nothing has been said for this long
 GREETING_CAPTION_S = 4.0  # s the "Good morning · Eyezenheim" caption stays up
 TIME_CAPTION_S = 3.0  # s the "It's · 3:15" caption stays up (a driving caption takes its place right away)
 PLANTED_STEERING_PARAM = "PlantedSteering"
+PARK = car.CarState.GearShifter.park
 
 
 WHITE, BLUE, GREEN, AMBER, ORANGE, RED, TEAL = ((200, 210, 225), (90, 170, 255), (0, 230, 90), (255, 190, 40),
@@ -432,6 +434,7 @@ class DriveNarrator(Widget):
     self._traffic = StopAndGo()
     self._last_said_at = -1e9
     self._time_announced: tuple[int, int, int] | None = None  # (day, hour, quarter) already announced
+    self._last_gear = None  # carState.gearShifter last frame, None until seen this onroad session
 
   def _inputs(self) -> NarratorInputs:
     sm = ui_state.sm
@@ -534,7 +537,14 @@ class DriveNarrator(Widget):
     if not ui_state.started:
       self._greeted, self._loaded_at, self._weather_started = False, None, False
       return
-    if self._greeted or not (self._voice and self._greeting):
+    if self._greeted or not (self._voice and (self._greeting or self._time_on)):
+      return
+    if not self._greeting:  # greeting off: still give the time chime once openpilot has loaded
+      if sm.recv_frame['carControl'] >= ui_state.started_frame and sm.alive['modelV2']:
+        self._loaded_at = now if self._loaded_at is None else self._loaded_at
+        if now - self._loaded_at >= GREETING_DELAY:
+          self._greeted = True
+          self._announce_time(now)
       return
     if self._weather_on and not self._weather_started:  # fetch while openpilot is still loading
       self._weather_started = True
@@ -581,10 +591,26 @@ class DriveNarrator(Widget):
       return
     if ui_state.sm['selfdriveState'].alertSize != log.SelfdriveState.AlertSize.none:
       return
-    self._time_announced = key
+    self._announce_time(now)
+
+  def _announce_time(self, now: float) -> None:
+    """Chime + "It's 3:22 P.M.", with the time caption. Counts as this quarter hour's announcement."""
+    t = datetime.now(GREETING_TZ)
+    self._time_announced = (t.toordinal(), t.hour, t.minute // 15)
     self._say(time_parts(t.hour, t.minute))
     self._time_caption = ("It's", time_caption(t.hour, t.minute))
     self._time_caption_until = now + TIME_CAPTION_S
+
+  def _update_park(self, now: float) -> None:
+    """Time chime when shifting into Park (end of the drive). Not when openpilot starts up already in Park."""
+    if not ui_state.started:
+      self._last_gear = None
+      return
+    gear = ui_state.sm['carState'].gearShifter
+    parked = gear == PARK
+    if parked and self._last_gear is not None and self._last_gear != PARK and self._voice and self._time_on:
+      self._announce_time(now)
+    self._last_gear = gear
 
   def _render(self, rect: rl.Rectangle) -> None:
     now = rl.get_time()
@@ -602,6 +628,7 @@ class DriveNarrator(Widget):
       self._voice_dir = VOICES[voice_id][0] if 0 <= voice_id < len(VOICES) else VOICES[1][0]
 
     self._update_greeting(now)
+    self._update_park(now)
 
     sm = ui_state.sm
     if not self._enabled or not ui_state.started or sm.recv_frame['carControl'] < ui_state.started_frame:
