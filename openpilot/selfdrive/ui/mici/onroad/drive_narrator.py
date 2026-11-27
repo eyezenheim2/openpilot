@@ -40,6 +40,8 @@ GREETING_TZ = ZoneInfo("America/Los_Angeles")  # same zone as the HUD clock
 TIME_QUIET_S = 3.0  # and only once nothing has been said for this long
 GREETING_CAPTION_S = 4.0  # s the "Good morning · Eyezenheim" caption stays up
 TIME_CAPTION_S = 3.0  # s the "It's · 3:15" caption stays up (a driving caption takes its place right away)
+VOICE_MUTE_S = 300.0  # s a screen tap mutes the voice for
+MUTE_CAPTION_S = 2.0  # s the "Voice muted · 5 min" caption stays up
 PLANTED_STEERING_PARAM = "PlantedSteering"
 PARK = car.CarState.GearShifter.park
 
@@ -436,6 +438,16 @@ class DriveNarrator(Widget):
     self._time_announced: tuple[int, int, int] | None = None  # (day, hour, quarter) already announced
     self._last_gear = None  # carState.gearShifter last frame, None until seen this onroad session
     self._session_frame: int | None = None  # ui_state.started_frame of the onroad session the state above belongs to
+    self._voice_muted_until = 0.0  # rl.get_time() until which nothing is spoken (screen tap)
+
+  def mute_voice(self) -> None:
+    """Screen tap: no spoken lines for VOICE_MUTE_S (restarts on every tap). Captions keep showing; lines that come
+    up meanwhile are dropped, not said later. The volume bar's test line still plays."""
+    now = rl.get_time()
+    self._voice_muted_until = now + VOICE_MUTE_S
+    if self._voice:
+      self._time_caption = ("Voice muted", f"{round(VOICE_MUTE_S / 60)} min")
+      self._time_caption_until = now + MUTE_CAPTION_S
 
   def _check_new_session(self) -> None:
     """Start fresh on every new onroad session. The onroad view (and so this widget) isn't drawn while offroad, so the
@@ -446,6 +458,7 @@ class DriveNarrator(Widget):
     self._session_frame = ui_state.started_frame
     self._greeted, self._loaded_at, self._weather_started = False, None, False
     self._last_gear = None
+    self._voice_muted_until = 0.0  # a tap's mute doesn't carry into the next drive's greeting
     self._logic.reset()
     self._speech = SpeechTrigger()
     self._traffic = StopAndGo()
@@ -531,8 +544,11 @@ class DriveNarrator(Widget):
       steer_request_deg=steer_request,
     )
 
-  def _say(self, parts: list[str]) -> None:
-    """Hand a line to soundd, which plays it on the narration output (see audio_routing.py)."""
+  def _say(self, parts: list[str], force: bool = False) -> None:
+    """Hand a line to soundd, which plays it on the narration output (see audio_routing.py).
+    Skipped while a screen tap has the voice muted, unless forced (volume test line)."""
+    if not force and rl.get_time() < self._voice_muted_until:
+      return
     self._say_id += 1
     self._last_said_at = rl.get_time()
     ui_state.params.put("DriveNarrationSay", {"id": f"{time.monotonic_ns()}-{self._say_id}", "time": time.monotonic(),
@@ -543,7 +559,7 @@ class DriveNarrator(Widget):
     self._volume = volume
     voice_id = int(ui_state.params.get("DriveNarrationVoiceId", return_default=True) or 0)
     self._voice_dir = VOICES[voice_id][0] if 0 <= voice_id < len(VOICES) else VOICES[1][0]
-    self._say(spoken_parts(Msg.SLOWING))
+    self._say(spoken_parts(Msg.SLOWING), force=True)
 
   def _update_greeting(self, now: float) -> None:
     """Speak one greeting per onroad session, shortly after openpilot has loaded."""

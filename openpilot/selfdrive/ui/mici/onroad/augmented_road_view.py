@@ -299,6 +299,9 @@ class AugmentedRoadView(CameraView):
       self._volume_controls_until = now + HUD_CONTROLS_SECONDS
       return
 
+    # any other tap mutes the narrator's voice for a few minutes (captions keep showing); each tap restarts it
+    self._drive_narrator.mute_voice()
+
     if now < self._planted_controls_until:
       planted = not ui_state.params.get_bool(PLANTED_STEERING_PARAM)
       ui_state.params.put_bool(PLANTED_STEERING_PARAM, planted)
