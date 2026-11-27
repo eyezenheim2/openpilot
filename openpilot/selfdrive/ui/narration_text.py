@@ -222,8 +222,8 @@ def time_caption(hour: int, minute: int) -> str:
   return f"{hour % 12 or 12}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
 
 
-# shown but not spoken: fires often at low speed and is a tuning aid rather than news
-NOT_SPOKEN = {Msg.PLANTED}
+# shown but not spoken: PLANTED fires often at low speed and is a tuning aid rather than news; GOING by request
+NOT_SPOKEN = {Msg.PLANTED, Msg.GOING}
 # shown but not spoken in stop-and-go traffic (see StopAndGo), where they'd repeat every few car lengths
 QUIET_IN_TRAFFIC = {Msg.SLOWING, Msg.STOPPING}
 

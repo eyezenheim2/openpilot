@@ -20,6 +20,7 @@ def test_spoken_parts_fill_numbers():
   assert spoken_parts(Msg.SPEED_LIMIT, max(NUMBERS) + 1) == []
   for m in NOT_SPOKEN:
     assert spoken_parts(m, 30) == []
+  assert Msg.GOING in NOT_SPOKEN  # "Car ahead moving" is caption-only
 
 
 def test_clip_names_unique_and_safe():
@@ -64,7 +65,7 @@ def test_speaks_once_per_caption():
 def test_slowing_and_stopping_quiet_in_stop_and_go():
   assert run_trigger([(Msg.SLOWING, 0, 3.0, True), (Msg.NONE, 0, 1.0), (Msg.STOPPING, 0, 3.0, True)]) == []
   # other lines still speak in traffic
-  assert [p for _, p in run_trigger([(Msg.GOING, 0, 2.0, True)])] == [["Car ahead moving.", "Going."]]
+  assert [p for _, p in run_trigger([(Msg.SIGN_GO, 0, 2.0, True)])] == [["Full stop made.", "Going."]]
   # a caption that started in traffic isn't said late when traffic clears mid-caption
   assert run_trigger([(Msg.STOPPING, 0, 1.0, True), (Msg.STOPPING, 0, 2.0, False)]) == []
   # outside traffic they're spoken as before
