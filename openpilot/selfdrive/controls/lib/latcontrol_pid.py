@@ -104,6 +104,8 @@ WINDIN_MIN_REQUEST = 10.0  # deg, |request| below this isn't a turn
 WINDIN_EASE_DEG = 10.0  # deg the request must have dropped from its peak in this turn (and rise again to let go)
 WINDIN_EASE_RATE = 20.0  # deg/s the request must be heading back to center at
 WINDIN_RATE_RC = 0.2  # s, smoothing on the request rate (the model's request wiggles a few degrees at ~1 Hz)
+WINDIN_EASE_HOLD_S = 0.15  # s the easing has to last before it latches (filters a dip that comes straight back)
+WINDIN_UNWIND_GAIN = 0.85  # aim 15% below the wheel when it latches, for a harder pull back (more gains nothing: full torque)
 WINDIN_MIN_RATIO = 0.4  # never scale the request below this share
 WINDIN_RELEASE_RC = 0.3  # s, how gently the scale returns to 1 when it lets go
 
@@ -121,6 +123,7 @@ class WindInStop:
     self.ratio: float | None = None  # latched wheel/target ratio while easing out of a turn
     self.low = 0.0  # |request| low since the ratio latched
     self.scale = 1.0
+    self.easing_for = 0.0  # s the easing condition has held
 
   def update(self, request: float, target: float, wheel: float, v_ego: float) -> float:
     """Scale (0..1) to apply to the smoothed target. 1 = untouched."""
@@ -130,20 +133,21 @@ class WindInStop:
 
     side = math.copysign(1., request) if abs(request) >= WINDIN_MIN_REQUEST else 0.
     if side == 0. or side != self.side or v_ego >= WINDIN_SPEED_MAX:  # straight, a new turn the other way, or fast
-      self.side, self.peak, self.ratio = side, abs(request), None
+      self.side, self.peak, self.ratio, self.easing_for = side, abs(request), None, 0.
     else:
       self.peak = max(self.peak, abs(request))
       if self.ratio is None:
         easing = (self.peak - abs(request) >= WINDIN_EASE_DEG and request * self.rate < 0. and
                   abs(self.rate) >= WINDIN_EASE_RATE)
         behind = wheel * target > 0. and abs(target) > abs(wheel)
-        if easing and behind:
-          self.ratio = max(abs(wheel) / abs(target), WINDIN_MIN_RATIO)
+        self.easing_for = self.easing_for + self.dt if (easing and behind) else 0.
+        if easing and behind and self.easing_for >= WINDIN_EASE_HOLD_S:
+          self.ratio = max(abs(wheel) / abs(target) * WINDIN_UNWIND_GAIN, WINDIN_MIN_RATIO)
           self.low = abs(request)
       else:
         self.low = min(self.low, abs(request))
         if abs(request) - self.low >= WINDIN_EASE_DEG:  # tightening again: give the full request back
-          self.ratio, self.peak = None, abs(request)
+          self.ratio, self.peak, self.easing_for = None, abs(request), 0.
 
     if self.ratio is not None:
       self.scale = self.ratio

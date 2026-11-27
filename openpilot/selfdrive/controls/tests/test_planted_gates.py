@@ -91,3 +91,9 @@ def test_wind_in_stop_gives_full_request_back_if_turn_tightens():
 def test_wind_in_stop_off_when_keeping_up_or_fast():
   assert min(run_wind_in([(2.0, 0., 140.), (1.0, 140., 80.)], wheel=139.)) > 0.95  # wheel kept up: ratio ~1
   assert all(s == 1.0 for s in run_wind_in([(2.0, 0., 140.), (1.0, 140., 80.)], wheel=70., v=15.))
+
+
+def test_wind_in_stop_ignores_a_quick_dip_that_comes_back():
+  # slowing for a stop: the request dips 14 deg in 0.1 s and comes straight back (seg 1 of route 252)
+  scales = run_wind_in([(1.5, 0., 76.), (0.1, 76., 62.), (0.4, 62., 72.), (1.0, 72., 72.)], wheel=25.)
+  assert all(s == 1.0 for s in scales)
