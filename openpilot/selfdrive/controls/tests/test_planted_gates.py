@@ -56,30 +56,38 @@ def test_unwinding():
 
 
 def run_wind_in(requests, wheel, v=7.0):
-  """requests: list of (seconds, start_deg, end_deg) ramps. Returns the list of hold flags, one per frame."""
+  """requests: list of (seconds, start_deg, end_deg) ramps; the target is taken as the request. Returns scales."""
   from openpilot.selfdrive.controls.lib.latcontrol_pid import WindInStop
-  stop, flags = WindInStop(DT), []
+  stop, scales = WindInStop(DT), []
   for seconds, a, b in requests:
     n = round(seconds / DT)
     for k in range(n):
-      flags.append(stop.update(a + (b - a) * k / n, wheel, v))
-  return flags
+      r = a + (b - a) * k / n
+      scales.append(stop.update(r, r, wheel, v))
+  return scales
 
 
-def test_wind_in_stop_holds_once_the_turn_peaks():
-  # request climbs to 140 deg, then eases off at 60 deg/s while the wheel (70 deg) is still behind it
-  flags = run_wind_in([(2.0, 0., 140.), (1.0, 140., 80.)], wheel=70.)
-  assert not any(flags[:200])  # never while turning in
-  assert any(flags[200:])
+def test_wind_in_stop_untouched_while_turning_in():
+  assert all(s == 1.0 for s in run_wind_in([(2.0, 0., 140.)], wheel=70.))
+
+
+def test_wind_in_stop_follows_the_request_down_once_the_turn_peaks():
+  # request climbs to 140 deg, then eases off at 60 deg/s while the wheel (70 deg) is behind it
+  scales = run_wind_in([(2.0, 0., 140.), (1.0, 140., 80.)], wheel=70.)
+  latched = [s for s in scales[200:] if s < 1.0]
+  assert latched and abs(latched[0] * 127.0 - 70.) < 10.  # the target starts near the wheel, not above it
 
 
 def test_wind_in_stop_ignores_mid_turn_wiggle():
-  # steady turn with the model's usual +-3 deg wiggle
   frames = [(1.5, 0., 120.)] + [(0.25, 120., 117.), (0.25, 117., 120.)] * 8
-  assert not any(run_wind_in(frames, wheel=70.))
+  assert all(s == 1.0 for s in run_wind_in(frames, wheel=70.))
 
 
-def test_wind_in_stop_lets_go_when_unwinding_or_fast():
-  flags = run_wind_in([(2.0, 0., 140.), (1.0, 140., 80.)], wheel=100.)
-  assert any(flags[200:260]) and not any(flags[-30:])  # holds while the request is above the wheel, lets go below it
-  assert not any(run_wind_in([(2.0, 0., 140.), (1.0, 140., 80.)], wheel=70., v=15.))  # off above ~25 mph
+def test_wind_in_stop_gives_full_request_back_if_turn_tightens():
+  scales = run_wind_in([(2.0, 0., 140.), (1.0, 140., 90.), (1.0, 90., 140.), (2.0, 140., 140.)], wheel=70.)
+  assert min(scales) < 0.9 and scales[-1] > 0.99
+
+
+def test_wind_in_stop_off_when_keeping_up_or_fast():
+  assert min(run_wind_in([(2.0, 0., 140.), (1.0, 140., 80.)], wheel=139.)) > 0.95  # wheel kept up: ratio ~1
+  assert all(s == 1.0 for s in run_wind_in([(2.0, 0., 140.), (1.0, 140., 80.)], wheel=70., v=15.))

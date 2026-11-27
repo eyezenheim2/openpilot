@@ -94,14 +94,18 @@ def unwinding(request: float, smoothed: float) -> bool:
 # planned path (seg 11 of 5bb5f789ca: 147 deg asked, the wheel topped out near 80 at full torque), so the wheel is always
 # behind the request and keeps winding in for ~2 s after the turn has peaked (66 -> 80 deg while the request was already
 # falling). Once the request is clearly easing off (WINDIN_EASE_DEG below its peak for this turn and falling faster than
-# WINDIN_EASE_RATE), openpilot stops adding turn and holds the target at the wheel's current angle, so the wheel starts
-# coming out with the request instead of after it. Normal tracking resumes as soon as the request is below the wheel
-# (unwinding) or starts rising again. Low speed only, where the over-request happens.
+# WINDIN_EASE_RATE), the target stops being the request itself and becomes the request scaled by how far behind the wheel
+# was at that moment (wheel / target, e.g. 66 / 141): the target starts right at the wheel, so nothing more winds in, and
+# then comes down in step with the request, so the wheel unwinds with it instead of ~1 s after it. Self-calibrating: if
+# the wheel is keeping up (ratio ~1) it changes nothing. It lets go when the turn ends, when the request tightens again
+# by WINDIN_EASE_DEG (a turn that keeps tightening gets the full request back) or above WINDIN_SPEED_MAX.
 WINDIN_SPEED_MAX = 11.0  # m/s (~25 mph): off above
 WINDIN_MIN_REQUEST = 10.0  # deg, |request| below this isn't a turn
-WINDIN_EASE_DEG = 10.0  # deg the request must have dropped from its peak in this turn
+WINDIN_EASE_DEG = 10.0  # deg the request must have dropped from its peak in this turn (and rise again to let go)
 WINDIN_EASE_RATE = 20.0  # deg/s the request must be heading back to center at
 WINDIN_RATE_RC = 0.2  # s, smoothing on the request rate (the model's request wiggles a few degrees at ~1 Hz)
+WINDIN_MIN_RATIO = 0.4  # never scale the request below this share
+WINDIN_RELEASE_RC = 0.3  # s, how gently the scale returns to 1 when it lets go
 
 
 class WindInStop:
@@ -112,25 +116,40 @@ class WindInStop:
   def reset(self):
     self.prev: float | None = None
     self.rate = 0.0
-    self.peak = 0.0  # |request| peak in the current turn, signed side kept in self.side
+    self.peak = 0.0  # |request| peak in the current turn
     self.side = 0.0
+    self.ratio: float | None = None  # latched wheel/target ratio while easing out of a turn
+    self.low = 0.0  # |request| low since the ratio latched
+    self.scale = 1.0
 
-  def update(self, request: float, wheel: float, v_ego: float) -> bool:
-    """True while openpilot should stop winding the wheel further in (hold it where it is)."""
+  def update(self, request: float, target: float, wheel: float, v_ego: float) -> float:
+    """Scale (0..1) to apply to the smoothed target. 1 = untouched."""
     if self.prev is not None:
       self.rate += ((request - self.prev) / self.dt - self.rate) * self.dt / (WINDIN_RATE_RC + self.dt)
     self.prev = request
 
     side = math.copysign(1., request) if abs(request) >= WINDIN_MIN_REQUEST else 0.
-    if side == 0. or side != self.side:  # straight, or a new turn the other way
-      self.side, self.peak = side, abs(request)
-      return False
-    self.peak = max(self.peak, abs(request))
+    if side == 0. or side != self.side or v_ego >= WINDIN_SPEED_MAX:  # straight, a new turn the other way, or fast
+      self.side, self.peak, self.ratio = side, abs(request), None
+    else:
+      self.peak = max(self.peak, abs(request))
+      if self.ratio is None:
+        easing = (self.peak - abs(request) >= WINDIN_EASE_DEG and request * self.rate < 0. and
+                  abs(self.rate) >= WINDIN_EASE_RATE)
+        behind = wheel * target > 0. and abs(target) > abs(wheel)
+        if easing and behind:
+          self.ratio = max(abs(wheel) / abs(target), WINDIN_MIN_RATIO)
+          self.low = abs(request)
+      else:
+        self.low = min(self.low, abs(request))
+        if abs(request) - self.low >= WINDIN_EASE_DEG:  # tightening again: give the full request back
+          self.ratio, self.peak = None, abs(request)
 
-    easing = (self.peak - abs(request) >= WINDIN_EASE_DEG and request * self.rate < 0. and
-              abs(self.rate) >= WINDIN_EASE_RATE)
-    winding_in = wheel * request > 0. and abs(request) > abs(wheel)
-    return bool(v_ego < WINDIN_SPEED_MAX and easing and winding_in)
+    if self.ratio is not None:
+      self.scale = self.ratio
+    else:
+      self.scale += (1. - self.scale) * self.dt / (WINDIN_RELEASE_RC + self.dt)
+    return self.scale
 
 
 def _scale_gain(gain, scale):
@@ -234,9 +253,9 @@ class LatControlPID(LatControl):
       angle_steers_des_no_offset = self._desired_angle.update(gated_request)
       rate_ref_no_offset = angle_steers_des_no_offset
       wheel_no_offset = CS.steeringAngleDeg - params.angleOffsetDeg
-      if self._wind_in_stop.update(angle_request_no_offset, wheel_no_offset, CS.vEgo) and \
-         abs(angle_steers_des_no_offset) > abs(wheel_no_offset):
-        angle_steers_des_no_offset = wheel_no_offset  # turn has peaked: hold the wheel, don't wind further in
+      # turn has peaked: stop winding in and bring the target down with the request (see WindInStop)
+      angle_steers_des_no_offset *= self._wind_in_stop.update(angle_request_no_offset, angle_steers_des_no_offset,
+                                                              wheel_no_offset, CS.vEgo)
     else:
       angle_steers_des_no_offset = angle_request_no_offset
       rate_ref_no_offset = angle_steers_des_no_offset
