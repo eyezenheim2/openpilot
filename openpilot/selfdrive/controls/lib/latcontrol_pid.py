@@ -99,6 +99,8 @@ def unwinding(request: float, smoothed: float) -> bool:
 # then comes down in step with the request, so the wheel unwinds with it instead of ~1 s after it. Self-calibrating: if
 # the wheel is keeping up (ratio ~1) it changes nothing. It lets go when the turn ends, when the request tightens again
 # by WINDIN_EASE_DEG (a turn that keeps tightening gets the full request back) or above WINDIN_SPEED_MAX.
+# It also stands down while the driver is pushing into the turn: route 197baa2656 seg 2 showed the driver adding turn
+# (openpilot at full torque, wheel behind the request) when it latched and started unwinding against them.
 WINDIN_SPEED_MAX = 11.0  # m/s (~25 mph): off above
 WINDIN_MIN_REQUEST = 10.0  # deg, |request| below this isn't a turn
 WINDIN_EASE_DEG = 10.0  # deg the request must have dropped from its peak in this turn (and rise again to let go)
@@ -125,8 +127,9 @@ class WindInStop:
     self.scale = 1.0
     self.easing_for = 0.0  # s the easing condition has held
 
-  def update(self, request: float, target: float, wheel: float, v_ego: float) -> float:
-    """Scale (0..1) to apply to the smoothed target. 1 = untouched."""
+  def update(self, request: float, target: float, wheel: float, v_ego: float, driver_into_turn: bool = False) -> float:
+    """Scale (0..1) to apply to the smoothed target. 1 = untouched. driver_into_turn: the driver is pressing the wheel
+    the same way as the turn, so they want more turn, not less: never latch, and let go if latched."""
     if self.prev is not None:
       self.rate += ((request - self.prev) / self.dt - self.rate) * self.dt / (WINDIN_RATE_RC + self.dt)
     self.prev = request
@@ -134,6 +137,8 @@ class WindInStop:
     side = math.copysign(1., request) if abs(request) >= WINDIN_MIN_REQUEST else 0.
     if side == 0. or side != self.side or v_ego >= WINDIN_SPEED_MAX:  # straight, a new turn the other way, or fast
       self.side, self.peak, self.ratio, self.easing_for = side, abs(request), None, 0.
+    elif driver_into_turn:  # the driver wants more turn: stand down at once, and measure any later easing from here
+      self.peak, self.ratio, self.easing_for, self.scale = abs(request), None, 0., 1.
     else:
       self.peak = max(self.peak, abs(request))
       if self.ratio is None:
@@ -258,8 +263,9 @@ class LatControlPID(LatControl):
       rate_ref_no_offset = angle_steers_des_no_offset
       wheel_no_offset = CS.steeringAngleDeg - params.angleOffsetDeg
       # turn has peaked: stop winding in and bring the target down with the request (see WindInStop)
+      driver_into_turn = CS.steeringPressed and CS.steeringTorque * angle_request_no_offset > 0.
       angle_steers_des_no_offset *= self._wind_in_stop.update(angle_request_no_offset, angle_steers_des_no_offset,
-                                                              wheel_no_offset, CS.vEgo)
+                                                              wheel_no_offset, CS.vEgo, driver_into_turn)
     else:
       angle_steers_des_no_offset = angle_request_no_offset
       rate_ref_no_offset = angle_steers_des_no_offset

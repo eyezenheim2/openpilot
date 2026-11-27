@@ -97,3 +97,16 @@ def test_wind_in_stop_ignores_a_quick_dip_that_comes_back():
   # slowing for a stop: the request dips 14 deg in 0.1 s and comes straight back (seg 1 of route 252)
   scales = run_wind_in([(1.5, 0., 76.), (0.1, 76., 62.), (0.4, 62., 72.), (1.0, 72., 72.)], wheel=25.)
   assert all(s == 1.0 for s in scales)
+
+
+def test_wind_in_stop_stands_down_while_driver_turns_in():
+  from openpilot.selfdrive.controls.lib.latcontrol_pid import WindInStop
+  stop = WindInStop(DT)
+  for k in range(200):  # turn in to 140 deg
+    stop.update(0.7 * k, 0.7 * k, 70., 7.0)
+  scales = []
+  for k in range(100):  # request eases while the wheel is behind: would latch...
+    r = 140. - 0.6 * k
+    scales.append(stop.update(r, r, 70., 7.0, driver_into_turn=k >= 50))  # ...then the driver pushes into the turn
+  assert min(scales[:50]) < 0.9  # latched before the driver stepped in
+  assert all(s == 1.0 for s in scales[50:])  # full request back the moment they push into the turn
