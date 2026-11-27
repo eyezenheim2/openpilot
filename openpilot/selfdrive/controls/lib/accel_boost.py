@@ -4,8 +4,8 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 
 # commaai/openpilot 8ca7fef ("better personalities: boost the model's acceleration on standard/aggressive", #39248),
-# adapted to this fork's planner: same update() call as AccelBoostSP, and no curve-speed offset here (0.0).
-# Runs when sunnypilot's Acceleration Boost (AccelBoostSP) is off.
+# adapted to this fork's planner (extra mpc/cruise args ignored, no curve-speed offset here: 0.0).
+# Always used; sunnypilot's AccelBoostSP is no longer swapped in.
 
 PLAN_GATE = [-0.5, 1.0]  # m/s the plan runs ahead of holding the current speed: no boost at 0.5 behind, full boost at 1 ahead
 
