@@ -110,3 +110,16 @@ def test_wind_in_stop_stands_down_while_driver_turns_in():
     scales.append(stop.update(r, r, 70., 7.0, driver_into_turn=k >= 50))  # ...then the driver pushes into the turn
   assert min(scales[:50]) < 0.9  # latched before the driver stepped in
   assert all(s == 1.0 for s in scales[50:])  # full request back the moment they push into the turn
+
+
+def test_full_torque_back_at_once_when_letting_go_behind_the_request():
+  gate, _ = run_gate([(1.0, 0.5, -1500.0, True)])  # driver holding the previous bend against openpilot
+  slow = OversteerGate(DT)
+  slow.weight = gate.weight
+  fast_out = gate.update(1.0, 0.0, False, error=40.)  # lets go; openpilot 40 deg behind the new turn
+  for _ in range(14):  # 0.15 s
+    fast_out = gate.update(1.0, 0.0, False, error=40.)
+  slow_out = 0.
+  for _ in range(15):
+    slow_out = slow.update(1.0, 0.0, False, error=2.)  # lets go near the target: keeps the gentle return
+  assert fast_out > 0.95 and slow_out < 0.6
