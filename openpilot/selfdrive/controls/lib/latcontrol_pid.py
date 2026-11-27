@@ -48,6 +48,48 @@ GATE_AVG_RC = 1.0  # s, averaging time for the "where the road actually goes" es
 GATE_WEIGHT_RC = 0.3  # s, smooths gate engage/release
 
 
+# Oversteer gate. On slow, tight turns the model's request runs far past what the wheel reaches (route 5bb5f789ca seg 11:
+# up to 147 deg asked, 80 deg reached), so P pins the output at full torque through the whole turn. Two things then feel
+# like oversteer:
+#   1. the driver holds the wheel against openpilot (wrong or early turn-in) and openpilot keeps pulling at 100%:
+#      while the driver's torque opposes openpilot's, openpilot's torque fades down to OVERRIDE_FLOOR;
+#   2. on the way out of a turn the 0.15 s desired smoothing lags the unwinding request by 10-15 deg, so the wheel is
+#      still held in at full torque after the road straightens: while the request heads back toward center inside a
+#      real turn, the smoothing drops to UNWIND_FILTER_RC. Straights keep the full smoothing (wobble handling unchanged).
+OVERRIDE_FLOOR = 0.3  # share of openpilot's torque kept while the driver holds against it
+OVERRIDE_ATTACK_RC = 0.1  # s, how fast the fade comes in once the driver opposes
+OVERRIDE_RELEASE_RC = 0.5  # s, how fast full torque comes back after the driver lets go (no snap-back)
+OVERRIDE_AGREE_RC = 0.05  # s, how fast it comes back when openpilot turns to push the same way as the driver
+UNWIND_MIN_ANGLE = 10.0  # deg, |smoothed target| above which a request heading back to center counts as a turn exit
+UNWIND_FILTER_RC = 0.03  # s, desired smoothing while unwinding out of a turn
+
+
+class OversteerGate:
+  def __init__(self, dt):
+    self.dt = dt
+    self.weight = 0.0  # 0 = full torque, 1 = faded to OVERRIDE_FLOOR
+
+  def reset(self):
+    self.weight = 0.0
+
+  def update(self, output_torque: float, driver_torque: float, steering_pressed: bool) -> float:
+    """Scale openpilot's torque down while the driver is pressing the wheel the other way."""
+    opposing = steering_pressed and driver_torque * output_torque < 0.
+    agreeing = steering_pressed and driver_torque * output_torque > 0.
+    target = 1.0 if opposing else 0.0
+    if target > self.weight:
+      rc = OVERRIDE_ATTACK_RC
+    else:
+      rc = OVERRIDE_AGREE_RC if agreeing else OVERRIDE_RELEASE_RC
+    self.weight += (target - self.weight) * self.dt / (rc + self.dt)
+    return output_torque * (1. - self.weight * (1. - OVERRIDE_FLOOR))
+
+
+def unwinding(request: float, smoothed: float) -> bool:
+  """The request is heading back toward center from inside a real turn (same side, smaller than the smoothed target)."""
+  return abs(smoothed) > UNWIND_MIN_ANGLE and request * smoothed >= 0. and abs(request) < abs(smoothed)
+
+
 def _scale_gain(gain, scale):
   bp, v = gain
   return list(bp), [x * scale for x in v]
@@ -90,10 +132,12 @@ class LatControlPID(LatControl):
     self._wheel_rate = FirstOrderFilter(0.0, PLANTED_WHEEL_RATE_FILTER_RC, dt, initialized=False)
     self._last_angle_des: float | None = None
     self._wobble_gate = WobbleGate(dt)
+    self._oversteer_gate = OversteerGate(dt)
     self._update_planted()
 
   def _reset_planted_filters(self):
     self._wobble_gate.reset()
+    self._oversteer_gate.reset()
     self._desired_angle.initialized = False
     self._wheel_rate.initialized = False
     self._desired_rate.x = 0.0
@@ -140,6 +184,8 @@ class LatControlPID(LatControl):
 
     if self.planted and active and PLANTED_DESIRED_FILTER_RC > 0.:
       gated_request, _ = self._wobble_gate.update(angle_request_no_offset, CS.vEgo)
+      exiting = self._desired_angle.initialized and unwinding(gated_request, self._desired_angle.x)
+      self._desired_angle.update_alpha(UNWIND_FILTER_RC if exiting else PLANTED_DESIRED_FILTER_RC)
       angle_steers_des_no_offset = self._desired_angle.update(gated_request)
     else:
       angle_steers_des_no_offset = angle_request_no_offset
@@ -169,6 +215,8 @@ class LatControlPID(LatControl):
                                 feedforward=ff,
                                 speed=CS.vEgo,
                                 freeze_integrator=freeze_integrator)
+      if self.planted:
+        output_torque = self._oversteer_gate.update(output_torque, CS.steeringTorque, CS.steeringPressed)
 
       pid_log.active = True
       pid_log.p = float(self.pid.p)
