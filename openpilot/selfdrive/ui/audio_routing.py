@@ -59,6 +59,27 @@ def _read_clip(path: Path) -> tuple[np.ndarray, int]:
     return np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768.0, w.getframerate()
 
 
+_clip_seconds_cache: dict[Path, float] = {}
+
+
+def line_seconds(voice: str, parts: list[str], clip_dir: Path = NARRATION_DIR) -> float:
+  """How long soundd will take to play a line (clips plus the pauses build() puts between them), from the wav headers.
+  A missing clip counts as 0 s."""
+  total = 0.0
+  for i, part in enumerate(parts):
+    path = clip_dir / CHIME_FILE if part == CHIME else clip_dir / voice / f"{clip_name(part)}.wav"
+    if path not in _clip_seconds_cache:
+      try:
+        with wave.open(str(path), "rb") as w:
+          _clip_seconds_cache[path] = w.getnframes() / w.getframerate()
+      except (OSError, wave.Error, ZeroDivisionError):
+        _clip_seconds_cache[path] = 0.0
+    total += _clip_seconds_cache[path]
+    if i < len(parts) - 1:
+      total += pause_after(part)
+  return total
+
+
 def compress(x: np.ndarray, rate: int) -> np.ndarray:
   """Gentle speech compressor: blockwise peak envelope with instant attack and smooth release, ratio above a threshold,
   then makeup gain to COMP_PEAK. Runs once per clip when it's loaded."""

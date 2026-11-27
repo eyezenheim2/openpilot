@@ -32,6 +32,7 @@ from openpilot.selfdrive.ui.narration_text import (Msg, TEXT, VOICES, SpeechTrig
                                                                spoken_parts, time_caption, time_parts, weather_parts, StopAndGo)
 from openpilot.common.params import Params
 from openpilot.selfdrive.ui.narration_weather import CACHE_PARAM, WeatherFetcher, position_from_param
+from openpilot.selfdrive.ui.audio_routing import line_seconds
 
 NARRATION_PARAM = "DriveNarration"
 GREETING_DELAY = 1.5  # s after openpilot has loaded (controls and model running) before the onroad greeting
@@ -42,6 +43,8 @@ GREETING_CAPTION_S = 4.0  # s the "Good morning · Eyezenheim" caption stays up
 TIME_CAPTION_S = 3.0  # s the "It's · 3:15" caption stays up (a driving caption takes its place right away)
 VOICE_MUTE_S = 300.0  # s a screen tap mutes the voice for
 MUTE_CAPTION_S = 2.0  # s the "Voice muted · 5 min" caption stays up
+TIME_AFTER_LINE_S = 0.4  # s of quiet after the current line before a waiting time chime plays
+TIME_MAX_WAIT_S = 20.0  # s a time chime waits for a free moment before it's dropped
 PLANTED_STEERING_PARAM = "PlantedSteering"
 PARK = car.CarState.GearShifter.park
 
@@ -439,6 +442,9 @@ class DriveNarrator(Widget):
     self._last_gear = None  # carState.gearShifter last frame, None until seen this onroad session
     self._session_frame: int | None = None  # ui_state.started_frame of the onroad session the state above belongs to
     self._voice_muted_until = 0.0  # rl.get_time() until which nothing is spoken (screen tap)
+    self._speaking_until = 0.0  # rl.get_time() when the line last handed to soundd finishes playing
+    self._time_pending_since: float | None = None  # a time chime is waiting for the current line to finish
+    self._time_said: tuple[int, int, int] | None = None  # (day, hour, minute) last spoken, greeting included
 
   def mute_voice(self) -> None:
     """Screen tap: no spoken lines for VOICE_MUTE_S (restarts on every tap). Captions keep showing; lines that come
@@ -459,6 +465,7 @@ class DriveNarrator(Widget):
     self._greeted, self._loaded_at, self._weather_started = False, None, False
     self._last_gear = None
     self._voice_muted_until = 0.0  # a tap's mute doesn't carry into the next drive's greeting
+    self._time_pending_since = None
     self._logic.reset()
     self._speech = SpeechTrigger()
     self._traffic = StopAndGo()
@@ -545,12 +552,15 @@ class DriveNarrator(Widget):
     )
 
   def _say(self, parts: list[str], force: bool = False) -> None:
-    """Hand a line to soundd, which plays it on the narration output (see audio_routing.py).
-    Skipped while a screen tap has the voice muted, unless forced (volume test line)."""
-    if not force and rl.get_time() < self._voice_muted_until:
+    """Hand a line to soundd, which plays it on the narration output (see audio_routing.py). soundd cuts off whatever
+    is still playing, so _speaking_until tracks when this line ends (time chimes wait for it).
+    Skipped while a screen tap has the voice muted, unless forced (volume test line, time chimes)."""
+    now = rl.get_time()
+    if not force and now < self._voice_muted_until:
       return
     self._say_id += 1
-    self._last_said_at = rl.get_time()
+    self._last_said_at = now
+    self._speaking_until = now + line_seconds(self._voice_dir, parts)
     ui_state.params.put("DriveNarrationSay", {"id": f"{time.monotonic_ns()}-{self._say_id}", "time": time.monotonic(),
                                               "voice": self._voice_dir, "volume": self._volume, "parts": parts})
 
@@ -574,7 +584,7 @@ class DriveNarrator(Widget):
         self._loaded_at = now if self._loaded_at is None else self._loaded_at
         if now - self._loaded_at >= GREETING_DELAY:
           self._greeted = True
-          self._announce_time(now)
+          self._request_time(now)
       return
     if self._weather_on and not self._weather_started:  # fetch while openpilot is still loading
       self._weather_started = True
@@ -602,10 +612,16 @@ class DriveNarrator(Widget):
         self._time_caption_until = now + GREETING_CAPTION_S
       if self._weather_on and (w := self._weather.result(ui_state.params.get_bool("IsMetric"))):
         parts += weather_parts(w.temp, w.code, w.is_day, w.rain_chance)
+      muted = now < self._voice_muted_until
+      if muted:  # tapped to mute before the greeting: only the time chime, which ignores the mute
+        parts = []
       if self._time_on:  # chime + "It's 7:42 A.M." to close the greeting; counts as this quarter hour's time announcement
         parts += time_parts(t.hour, t.minute)
         self._time_announced = (t.toordinal(), t.hour, t.minute // 15)
-      self._say(parts)
+        self._time_said = (t.toordinal(), t.hour, t.minute)
+        self._time_pending_since = None  # the greeting has the time: drop any separate chime that was waiting
+      if parts:
+        self._say(parts, force=muted)
 
   def _update_time(self, now: float, i: NarratorInputs, in_traffic: bool) -> None:
     """In stop-and-go traffic, say the exact time once per quarter hour while stopped behind a car, in a quiet moment
@@ -621,13 +637,28 @@ class DriveNarrator(Widget):
       return
     if ui_state.sm['selfdriveState'].alertSize != log.SelfdriveState.AlertSize.none:
       return
-    self._announce_time(now)
+    self._request_time(now)
 
-  def _announce_time(self, now: float) -> None:
-    """Chime + "It's 3:22 P.M.", with the time caption. Counts as this quarter hour's announcement."""
+  def _request_time(self, now: float) -> None:
+    """Ask for a time chime; _flush_time says it once nothing else is playing."""
+    if self._time_pending_since is None:
+      self._time_pending_since = now
+
+  def _flush_time(self, now: float) -> None:
+    """Say a requested time chime once the current line (e.g. the greeting) has finished, so it never cuts one off.
+    Dropped if that minute's time was already said (the greeting ends with it) or it's been waiting too long.
+    Time chimes ignore the tap-to-mute."""
+    if self._time_pending_since is None or now < self._speaking_until + TIME_AFTER_LINE_S:
+      if self._time_pending_since is not None and now - self._time_pending_since > TIME_MAX_WAIT_S:
+        self._time_pending_since = None
+      return
+    self._time_pending_since = None
     t = datetime.now(GREETING_TZ)
     self._time_announced = (t.toordinal(), t.hour, t.minute // 15)
-    self._say(time_parts(t.hour, t.minute))
+    if self._time_said == (t.toordinal(), t.hour, t.minute):
+      return
+    self._time_said = (t.toordinal(), t.hour, t.minute)
+    self._say(time_parts(t.hour, t.minute), force=True)
     self._time_caption = ("It's", time_caption(t.hour, t.minute))
     self._time_caption_until = now + TIME_CAPTION_S
 
@@ -639,8 +670,9 @@ class DriveNarrator(Widget):
     gear = ui_state.sm['carState'].gearShifter
     parked = gear == PARK
     if parked and self._last_gear is not None and self._last_gear != PARK and self._voice and self._time_on:
-      self._announce_time(now)
+      self._request_time(now)
     self._last_gear = gear
+    self._flush_time(now)
 
   def _render(self, rect: rl.Rectangle) -> None:
     now = rl.get_time()

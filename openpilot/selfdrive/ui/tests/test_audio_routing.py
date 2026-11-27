@@ -99,3 +99,16 @@ def test_chime_is_shared_and_quieter_than_the_voice():
   assert np.abs(chime).max() < 0.5 * np.abs(voice).max()
   line = p.build("voice_a", ["[chime]", "It's", "8", "A.M."])
   assert len(line) > len(chime) + len(voice)
+
+
+def test_line_seconds_matches_what_plays():
+  from openpilot.selfdrive.ui.audio_routing import line_seconds
+  from openpilot.selfdrive.ui.narration_text import time_parts
+  for parts in (["Set to", "65", "Speeding up."], ["Eyezenheim,", "Good morning. Ready when you are."] + time_parts(8, 5)):
+    p = NarrationPlayer(48000)
+    assert p.handle_request(request(parts), now=time.monotonic())
+    played = 0
+    while p.playing:
+      played += len(p.read(4096))
+    assert abs(line_seconds("voice_a", parts) - played / 48000) < 0.1
+  assert line_seconds("voice_a", ["not a phrase we have"]) == 0.0
