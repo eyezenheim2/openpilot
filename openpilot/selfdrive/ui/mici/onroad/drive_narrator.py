@@ -584,14 +584,7 @@ class DriveNarrator(Widget):
     if not ui_state.started:
       self._greeted, self._loaded_at, self._weather_started = False, None, False
       return
-    if self._greeted or not (self._voice and (self._greeting or self._time_on)):
-      return
-    if not self._greeting:  # greeting off: still give the time chime once openpilot has loaded
-      if sm.recv_frame['carControl'] >= ui_state.started_frame and sm.alive['modelV2']:
-        self._loaded_at = now if self._loaded_at is None else self._loaded_at
-        if now - self._loaded_at >= GREETING_DELAY:
-          self._greeted = True
-          self._request_time(now)
+    if self._greeted or not (self._voice and self._greeting):
       return
     if self._weather_on and not self._weather_started:  # fetch while openpilot is still loading
       self._weather_started = True
@@ -633,7 +626,7 @@ class DriveNarrator(Widget):
   def _update_time(self, now: float, i: NarratorInputs, in_traffic: bool) -> None:
     """In stop-and-go traffic, say the exact time once per quarter hour while stopped behind a car, in a quiet moment
     (no recent line, no openpilot alert, after the greeting)."""
-    if not (self._voice and self._time_on and self._greeted):
+    if not (self._voice and self._time_on and (self._greeted or not self._greeting)):
       return
     stopped_behind_car = (i.standstill or i.v_ego < StopAndGo.STOP_SPEED) and i.lead_present
     if not (in_traffic and stopped_behind_car):
@@ -654,7 +647,7 @@ class DriveNarrator(Widget):
   def _update_live(self, now: float, msg: Msg) -> None:
     """Live road info (narration_live.py): feed it the car's position, and say what it found in a quiet moment, never
     over a driving caption, an openpilot alert, the greeting, a waiting time chime or another line."""
-    greeting_done = self._greeted or not (self._greeting or self._time_on)  # nothing to wait for when both are off
+    greeting_done = self._greeted or not self._greeting  # nothing to wait for when the greeting is off
     if not (self._live_on and self._voice and greeting_done):
       self._stop_live()
       return
