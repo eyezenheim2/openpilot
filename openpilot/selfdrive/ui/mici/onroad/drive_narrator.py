@@ -650,7 +650,8 @@ class DriveNarrator(Widget):
     if not (ui_state.started and self._voice):
       return
     state = ui_state.chestnut_state
-    if state == ChestnutState.LOADING and CHESTNUT_CONNECTING not in self._chestnut_said:
+    if (state == ChestnutState.LOADING and CHESTNUT_CONNECTING not in self._chestnut_said and
+        not self._greeted and now >= self._speaking_until):  # only before the greeting, never over a line
       self._chestnut_said.add(CHESTNUT_CONNECTING)
       self._say([CHESTNUT_CONNECTING])
       self._time_caption, self._time_caption_until = ("Chestnut", "Connecting"), now + CHESTNUT_CAPTION_S
