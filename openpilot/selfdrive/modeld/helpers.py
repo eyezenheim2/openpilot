@@ -51,6 +51,15 @@ def wait_for_chestnut(timeout: float = 10.) -> None:
       raise TimeoutError("chestnut did not enumerate")
     time.sleep(0.1)
 
+def chestnut_on_port(timeout: float = 5.) -> bool:
+  """With a USB speaker on the port too (USB-C hub), the chestnut still comes first: True once it enumerates.
+  Gives it a few seconds, since it can show up after the speaker. False when only the speaker is there."""
+  try:
+    wait_for_chestnut(timeout)
+    return True
+  except TimeoutError:
+    return False
+
 def chestnut_compiled() -> bool:
   # an unfetched LFS pointer is not a loadable model
   return all(path.is_file() and not is_lfs_pointer(path) for path in big_model_paths())

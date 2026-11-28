@@ -219,8 +219,8 @@ class UIState(UIStateSP):
         self.started_frame = self.sm.frame
         self.started_time = time.monotonic()
         self.chestnut_present = self.sm["deviceState"].chestnutPresent or (self.chestnut_compiled and self.usb_connected)
-        if usb_speaker_present():  # modeld skips the chestnut when a USB speaker is connected: no chestnut icon
-          self.chestnut_present = False
+        if usb_speaker_present() and not self.sm["deviceState"].chestnutPresent:  # speaker alone on the port: modeld
+          self.chestnut_present = False  # skips the chestnut, no chestnut icon (on a hub with the speaker it has priority)
 
       for callback in self._offroad_transition_callbacks:
         callback()

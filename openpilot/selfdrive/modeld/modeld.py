@@ -40,7 +40,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, 
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
 from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_driving_model_data, fill_pose_msg, PublishState
 from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
-from openpilot.selfdrive.modeld.helpers import MODELS_DIR, chestnut_present, chestnut_compiled, modeld_pkl_path, load_oob, wait_for_chestnut
+from openpilot.selfdrive.modeld.helpers import MODELS_DIR, chestnut_on_port, chestnut_present, chestnut_compiled, modeld_pkl_path, load_oob, wait_for_chestnut
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
@@ -237,9 +237,10 @@ def main(demo=False):
   cloudlog.warning("modeld init")
 
   CHESTNUT = chestnut_compiled() and (chestnut_present() or cable_connected())
-  if CHESTNUT and usb_speaker_present():
-    # the USB speaker shares the port: don't look for the chestnut, run the small model (no "Big Model Failed")
-    cloudlog.warning("USB speaker connected, skipping chestnut")
+  if CHESTNUT and usb_speaker_present() and not chestnut_on_port():
+    # only the USB speaker is on the port: run the small model (no "Big Model Failed").
+    # Both on a USB-C hub: the chestnut has priority and the big model runs; the speaker keeps playing.
+    cloudlog.warning("USB speaker connected without the chestnut, skipping chestnut")
     CHESTNUT = False
   if CHESTNUT:
     from tinygrad.runtime.ops_amd import AMDDevice

@@ -19,7 +19,7 @@ from setproctitle import setproctitle
 
 import openpilot.cereal.messaging as messaging
 from openpilot.common.hardware import COMMA_HARDWARE
-from openpilot.selfdrive.modeld.helpers import chestnut_present, wait_for_chestnut
+from openpilot.selfdrive.modeld.helpers import chestnut_on_port, chestnut_present, wait_for_chestnut
 from openpilot.cereal import log
 from opendbc.car.structs import car
 from openpilot.cereal.services import SERVICE_LIST
@@ -265,9 +265,10 @@ def main(demo=False):
   setproctitle(PROCESS_NAME)
 
   CHESTNUT = _find_driving_pkl(get_active_bundle(chestnut=True)) is not None and (chestnut_present() or cable_connected())
-  if CHESTNUT and usb_speaker_present():
-    # the USB speaker shares the port: don't look for the chestnut, run the small model (no "Big Model Failed")
-    cloudlog.warning("USB speaker connected, skipping chestnut")
+  if CHESTNUT and usb_speaker_present() and not chestnut_on_port():
+    # only the USB speaker is on the port: run the small model (no "Big Model Failed").
+    # Both on a USB-C hub: the chestnut has priority and the big model runs; the speaker keeps playing.
+    cloudlog.warning("USB speaker connected without the chestnut, skipping chestnut")
     CHESTNUT = False
   if CHESTNUT:
     from tinygrad.runtime.ops_amd import AMDDevice
