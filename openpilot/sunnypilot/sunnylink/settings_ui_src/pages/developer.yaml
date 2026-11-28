@@ -260,6 +260,17 @@ sections:
     - type: param
       key: DriveNarrationVoice
       equals: true
+  - key: DriveNarrationLive
+    widget: toggle
+    title: Live Road Info
+    description: While driving with internet (phone hotspot), the narration mentions rain starting within the hour ("Rain
+      starting in about 15 minutes."), earthquakes nearby, and, with a free 511 SF Bay token entered on the device
+      (Developer, "511 token"), incidents on the road ahead ("Crash reported ahead. 2 miles ahead.") and express lane tolls.
+      Each is said once, in a quiet moment.
+    enablement:
+    - type: param
+      key: DriveNarrationVoice
+      equals: true
 - id: usb_audio
   title: Sound Output
   description: Where openpilot's sounds and the narration voice play, and how quiet the alerts can get.

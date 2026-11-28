@@ -222,6 +222,51 @@ def time_caption(hour: int, minute: int) -> str:
   return f"{hour % 12 or 12}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
 
 
+# live road info (narration_live.py): fetched while driving, spoken from these clips plus the number clips
+LIVE_RAIN = "Rain starting in about"  # + n + LIVE_MINUTES
+LIVE_MINUTES = "minutes."
+LIVE_QUAKE = "Earthquake nearby."  # + "Magnitude" + 4 (+ "point" + 2) + distance "away"
+LIVE_MAGNITUDE = "Magnitude"
+LIVE_POINT = "point"
+LIVE_TRAFFIC = {  # + distance "ahead"
+  "crash": "Crash reported ahead.",
+  "stalled": "Stalled vehicle ahead.",
+  "hazard": "Road hazard ahead.",
+  "closed": "Road closed ahead.",
+  "lane": "Lane closure ahead.",
+  "incident": "Incident reported ahead.",
+}
+LIVE_TOLL = "Express lane toll is"  # + dollars (+ cents)
+_LIVE_UNITS = {(u, s, plural): f"{u}{'s' if plural else ''} {s}." for u in ("mile", "kilometer") for s in ("ahead", "away")
+               for plural in (False, True)}
+_LIVE_LESS = {(u, s): f"Less than a {u} {s}." for u in ("mile", "kilometer") for s in ("ahead", "away")}
+_LIVE_MONEY = ("dollar", "dollars", "cents.")
+
+
+def live_unit(unit: str, n: int, suffix: str) -> str:
+  """("mile", 3, "ahead") -> "miles ahead.", ("kilometer", 1, "away") -> "kilometer away." """
+  return _LIVE_UNITS[(unit, suffix, n != 1)]
+
+
+def live_less_than(unit: str, suffix: str) -> str:
+  return _LIVE_LESS[(unit, suffix)]
+
+
+def live_toll_parts(price: float) -> list[str]:
+  """4.5 -> ["Express lane toll is", "4", "dollars", "50"], 0.75 -> [..., "75", "cents."], 1.0 -> [..., "1", "dollar"]"""
+  cents_total = int(round(price * 100))
+  dollars, cents = divmod(cents_total, 100)
+  dollars = min(dollars, max(NUMBERS))
+  if dollars == 0:
+    return [LIVE_TOLL, str(cents), "cents."]
+  return [LIVE_TOLL, str(dollars), "dollar" if dollars == 1 else "dollars"] + ([str(cents)] if cents else [])
+
+
+def live_clip_texts() -> set[str]:
+  return ({LIVE_RAIN, LIVE_MINUTES, LIVE_QUAKE, LIVE_MAGNITUDE, LIVE_POINT, LIVE_TOLL} | set(LIVE_TRAFFIC.values()) |
+          set(_LIVE_UNITS.values()) | set(_LIVE_LESS.values()) | set(_LIVE_MONEY))
+
+
 # shown but not spoken: PLANTED fires often at low speed and is a tuning aid rather than news; GOING by request
 NOT_SPOKEN = {Msg.PLANTED, Msg.GOING}
 # shown but not spoken in stop-and-go traffic (see StopAndGo), where they'd repeat every few car lengths
@@ -278,6 +323,7 @@ def all_clip_texts() -> list[str]:
   phrases |= {WEATHER_PREFIX, WEATHER_RAIN_LATER}
   phrases |= {spoken for _, spoken in NAMES}
   phrases |= {c for _, conds in WEATHER_CONDITIONS for c in conds}
+  phrases |= live_clip_texts()
   return sorted(phrases) + [str(n) for n in NUMBERS]
 
 

@@ -120,6 +120,23 @@ class DeveloperLayoutMici(NavScroller):
     self._name_btn = BigButton("your name", ui_state.params.get("DriveNarrationName") or "Not set",
                                description="The name the narration greets you by, when none is picked in sunnylink.")
     self._name_btn.set_click_callback(name_click)
+
+    def token_text(token: str) -> str:
+      return f"set (...{token[-4:]})" if token else "Not set"
+
+    def token_callback(token: str):
+      token = token.strip()[:64]
+      ui_state.params.put("Narration511Token", token)
+      self._token_btn.set_value(token_text(token))
+
+    def token_click():
+      gui_app.push_widget(BigInputDialog("511 token...", ui_state.params.get("Narration511Token") or "",
+                                         minimum_length=0, confirm_callback=token_callback))
+
+    self._token_btn = BigButton("511 token", token_text(ui_state.params.get("Narration511Token") or ""),
+                                description="Free 511 SF Bay open data token (from 511.org/open-data) for live road info: " +
+                                            "incidents on the road ahead and express lane tolls. Needs internet while driving.")
+    self._token_btn.set_click_callback(token_click)
     self._usb_audio_toggle = BigParamControl("usb speaker", "UsbAudioOutput",
                                              description="Play all sounds through a USB speaker when one is plugged in. " +
                                                          "Urgent alarms also stay on the built-in speaker (sunnylink setting).")
@@ -170,6 +187,7 @@ class DeveloperLayoutMici(NavScroller):
       self._narration_voice_toggle,
       self._greet_name_toggle,
       self._name_btn,
+      self._token_btn,
       self._usb_audio_toggle,
       self._stop_line_assist_toggle,
       self._stop_sign_toggle,

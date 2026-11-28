@@ -33,6 +33,7 @@ from openpilot.selfdrive.ui.narration_text import (Msg, TEXT, VOICES, SpeechTrig
 from openpilot.common.params import Params
 from openpilot.selfdrive.ui.narration_weather import CACHE_PARAM, WeatherFetcher, position_from_param
 from openpilot.selfdrive.ui.audio_routing import line_seconds
+from openpilot.selfdrive.ui.narration_live import TOKEN_PARAM, LiveFeeds
 
 NARRATION_PARAM = "DriveNarration"
 GREETING_DELAY = 1.5  # s after openpilot has loaded (controls and model running) before the onroad greeting
@@ -43,6 +44,8 @@ GREETING_CAPTION_S = 4.0  # s the "Good morning · Eyezenheim" caption stays up
 TIME_CAPTION_S = 3.0  # s the "It's · 3:15" caption stays up (a driving caption takes its place right away)
 VOICE_MUTE_S = 300.0  # s a screen tap mutes the voice for
 MUTE_CAPTION_S = 2.0  # s the "Voice muted · 5 min" caption stays up
+LIVE_CAPTION_S = 5.0  # s a live road info caption ("Crash reported ahead · I-80 · 2 mi") stays up
+LIVE_QUIET_S = 3.0  # s since the last line before a live announcement may be said
 TIME_AFTER_LINE_S = 0.4  # s of quiet after the current line before a waiting time chime plays
 TIME_MAX_WAIT_S = 20.0  # s a time chime waits for a free moment before it's dropped
 PLANTED_STEERING_PARAM = "PlantedSteering"
@@ -445,6 +448,10 @@ class DriveNarrator(Widget):
     self._speaking_until = 0.0  # rl.get_time() when the line last handed to soundd finishes playing
     self._time_pending_since: float | None = None  # a time chime is waiting for the current line to finish
     self._time_said: tuple[int, int, int] | None = None  # (day, hour, minute) last spoken, greeting included
+    self._live = LiveFeeds()
+    self._live_on = True
+    self._live_token = ""
+    self._live_running = False
 
   def mute_voice(self) -> None:
     """Screen tap: no spoken lines for VOICE_MUTE_S (restarts on every tap). Captions keep showing; lines that come
@@ -639,6 +646,32 @@ class DriveNarrator(Widget):
       return
     self._request_time(now)
 
+  def _stop_live(self) -> None:
+    if self._live_running:
+      self._live.stop()
+      self._live_running = False
+
+  def _update_live(self, now: float, msg: Msg) -> None:
+    """Live road info (narration_live.py): feed it the car's position, and say what it found in a quiet moment, never
+    over a driving caption, an openpilot alert, the greeting, a waiting time chime or another line."""
+    greeting_done = self._greeted or not (self._greeting or self._time_on)  # nothing to wait for when both are off
+    if not (self._live_on and self._voice and greeting_done):
+      self._stop_live()
+      return
+    sm = ui_state.sm
+    gps = sm['gpsLocationExternal']
+    fix = sm.alive['gpsLocationExternal'] and gps.hasFix
+    pos = (float(gps.latitude), float(gps.longitude)) if fix else None
+    self._live.update(pos, float(gps.bearingDeg), float(gps.speed), ui_state.is_metric, self._live_token)
+    self._live_running = True
+    quiet = (msg in (Msg.NONE, Msg.WAITING) and now >= self._speaking_until + TIME_AFTER_LINE_S and
+             now - self._last_said_at >= LIVE_QUIET_S and now >= self._voice_muted_until and
+             self._time_pending_since is None and sm['selfdriveState'].alertSize == log.SelfdriveState.AlertSize.none)
+    if quiet and (a := self._live.pop()) is not None:
+      self._say(a.parts)
+      self._time_caption = a.caption
+      self._time_caption_until = now + LIVE_CAPTION_S
+
   def _request_time(self, now: float) -> None:
     """Ask for a time chime; _flush_time says it once nothing else is playing."""
     if self._time_pending_since is None:
@@ -685,6 +718,8 @@ class DriveNarrator(Widget):
       self._greeting = params.get_bool("DriveNarrationGreeting")
       self._time_on = params.get_bool("DriveNarrationTime")
       self._weather_on = params.get_bool("DriveNarrationWeather")
+      self._live_on = params.get_bool("DriveNarrationLive")
+      self._live_token = params.get(TOKEN_PARAM) or ""
       self._volume = int(params.get("DriveNarrationVolume", return_default=True) or 0)
       voice_id = int(params.get("DriveNarrationVoiceId", return_default=True) or 0)
       self._voice_dir = VOICES[voice_id][0] if 0 <= voice_id < len(VOICES) else VOICES[1][0]
@@ -695,6 +730,7 @@ class DriveNarrator(Widget):
 
     sm = ui_state.sm
     if not self._enabled or not ui_state.started or sm.recv_frame['carControl'] < ui_state.started_frame:
+      self._stop_live()
       self._logic.reset()
       self._speech = SpeechTrigger()
       self._traffic = StopAndGo()
@@ -711,6 +747,7 @@ class DriveNarrator(Widget):
 
     if self._voice and (parts := self._speech.update(msg, self._logic.value, now, in_traffic)):
       self._say(parts)
+    self._update_live(now, msg)
 
     visible = msg != Msg.NONE
     time_up = (self._time_caption is not None and now < self._time_caption_until and
