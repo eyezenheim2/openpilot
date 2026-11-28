@@ -23,11 +23,11 @@ import pyray as rl
 
 from opendbc.car.structs import car
 from openpilot.cereal import custom, log
-from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.selfdrive.ui.ui_state import ChestnutState, ui_state
 from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
-from openpilot.selfdrive.ui.narration_text import (Msg, TEXT, VOICES, SpeechTrigger,
+from openpilot.selfdrive.ui.narration_text import (CHESTNUT_CONNECTED, CHESTNUT_CONNECTING, Msg, TEXT, VOICES, SpeechTrigger,
                                                                greeting_caption, greeting_choices, name_clip, resolve_name,
                                                                spoken_parts, time_caption, time_parts, weather_parts, StopAndGo)
 from openpilot.common.params import Params
@@ -44,6 +44,7 @@ GREETING_CAPTION_S = 4.0  # s the "Good morning · Eyezenheim" caption stays up
 TIME_CAPTION_S = 3.0  # s the "It's · 3:15" caption stays up (a driving caption takes its place right away)
 VOICE_MUTE_S = 300.0  # s a screen tap mutes the voice for
 MUTE_CAPTION_S = 2.0  # s the "Voice muted · 5 min" caption stays up
+CHESTNUT_CAPTION_S = 3.0  # s the "Chestnut · Connected" caption stays up
 LIVE_CAPTION_S = 5.0  # s a live road info caption ("Crash reported ahead · I-80 · 2 mi") stays up
 LIVE_QUIET_S = 3.0  # s since the last line before a live announcement may be said
 TIME_AFTER_LINE_S = 0.4  # s of quiet after the current line before a waiting time chime plays
@@ -448,6 +449,7 @@ class DriveNarrator(Widget):
     self._speaking_until = 0.0  # rl.get_time() when the line last handed to soundd finishes playing
     self._time_pending_since: float | None = None  # a time chime is waiting for the current line to finish
     self._time_said: tuple[int, int, int] | None = None  # (day, hour, minute) last spoken, greeting included
+    self._chestnut_said: set[str] = set()  # chestnut lines already said this onroad session
     self._live = LiveFeeds()
     self._live_on = True
     self._live_token = ""
@@ -473,6 +475,7 @@ class DriveNarrator(Widget):
     self._last_gear = None
     self._voice_muted_until = 0.0  # a tap's mute doesn't carry into the next drive's greeting
     self._time_pending_since = None
+    self._chestnut_said = set()
     self._logic.reset()
     self._speech = SpeechTrigger()
     self._traffic = StopAndGo()
@@ -597,6 +600,8 @@ class DriveNarrator(Widget):
     elif now - self._loaded_at >= GREETING_DELAY:
       if self._weather_on and self._weather.busy and now - self._loaded_at < GREETING_DELAY + WEATHER_WAIT:
         return
+      if now < self._speaking_until + TIME_AFTER_LINE_S:  # let a line still playing ("Chestnut connected.") finish
+        return
       self._greeted = True
       t = datetime.now(GREETING_TZ)
       greeting = random.choice(greeting_choices(t.hour))
@@ -638,6 +643,22 @@ class DriveNarrator(Widget):
     if ui_state.sm['selfdriveState'].alertSize != log.SelfdriveState.AlertSize.none:
       return
     self._request_time(now)
+
+  def _update_chestnut(self, now: float) -> None:
+    """Say "Chestnut connecting." when the big model starts loading on the chestnut and "Chestnut connected." once
+    it's driving, each once per onroad session. Silent without a chestnut (or with only the USB speaker on the port)."""
+    if not (ui_state.started and self._voice):
+      return
+    state = ui_state.chestnut_state
+    if state == ChestnutState.LOADING and CHESTNUT_CONNECTING not in self._chestnut_said:
+      self._chestnut_said.add(CHESTNUT_CONNECTING)
+      self._say([CHESTNUT_CONNECTING])
+      self._time_caption, self._time_caption_until = ("Chestnut", "Connecting"), now + CHESTNUT_CAPTION_S
+    elif (state == ChestnutState.ACTIVE and CHESTNUT_CONNECTED not in self._chestnut_said and
+          now >= self._speaking_until):  # after "connecting" (or any line) has finished, never over it
+      self._chestnut_said.add(CHESTNUT_CONNECTED)
+      self._say([CHESTNUT_CONNECTED])
+      self._time_caption, self._time_caption_until = ("Chestnut", "Connected"), now + CHESTNUT_CAPTION_S
 
   def _stop_live(self) -> None:
     if self._live_running:
@@ -718,6 +739,7 @@ class DriveNarrator(Widget):
       self._voice_dir = VOICES[voice_id][0] if 0 <= voice_id < len(VOICES) else VOICES[1][0]
 
     self._check_new_session()
+    self._update_chestnut(now)
     self._update_greeting(now)
     self._update_park(now)
 

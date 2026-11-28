@@ -204,6 +204,10 @@ TIME_PREFIX = "It's"
 TIME_AM, TIME_PM = "A.M.", "P.M."
 CHIME = "[chime]"  # soft two-note chime, shared by all voices (narration/chime.wav, made by tools/narration/make_voices.py)
 CHIME_FILE = "chime.wav"
+
+# chestnut (big model GPU) status, said once per drive: when it starts loading, then when the big model is running
+CHESTNUT_CONNECTING = "Chestnut connecting."
+CHESTNUT_CONNECTED = "Chestnut connected."
 PAUSE_AFTER_CHIME = 0.15  # s between the chime and the voice
 
 
@@ -324,6 +328,7 @@ def all_clip_texts() -> list[str]:
   phrases |= {spoken for _, spoken in NAMES}
   phrases |= {c for _, conds in WEATHER_CONDITIONS for c in conds}
   phrases |= live_clip_texts()
+  phrases |= {CHESTNUT_CONNECTING, CHESTNUT_CONNECTED}
   return sorted(phrases) + [str(n) for n in NUMBERS]
 
 
